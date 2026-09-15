@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Hidrata</title>
+  <meta name="theme-color" content="#14b8a6" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="google-config.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+
+  <!-- TELA: LOGIN / CRIAR CONTA -->
+  <section id="screen-auth" class="screen">
+    <div class="auth-card">
+      <div class="brand">
+        <span class="drop">💧</span>
+        <h1>Hidrata</h1>
+        <p class="subtitle">Beba água, ganhe XP, suba de nível.</p>
+      </div>
+
+      <div id="google-signin-section" class="google-section hidden">
+        <div id="google-signin-btn" class="google-btn-wrap"></div>
+        <div class="divider"><span>ou</span></div>
+      </div>
+
+      <div id="profile-block">
+        <div id="profile-list" class="profile-list"></div>
+        <button type="button" class="btn-link" id="btn-goto-create">+ Criar perfil local</button>
+      </div>
+
+      <form id="form-create" class="form hidden">
+        <h2>Criar conta local</h2>
+        <label>Nome
+          <input type="text" id="c-name" required placeholder="Como podemos te chamar?" />
+        </label>
+        <label>E-mail (fica só neste aparelho)
+          <input type="email" id="c-email" required placeholder="voce@exemplo.com" />
+        </label>
+        <div class="row">
+          <label>Peso (kg)
+            <input type="number" id="c-weight" min="20" max="250" step="1" required placeholder="70" />
+          </label>
+          <label>Atividade física
+            <select id="c-activity">
+              <option value="sedentary">Pouca ou nenhuma</option>
+              <option value="light" selected>Leve (1-3x/semana)</option>
+              <option value="moderate">Moderada (3-5x/semana)</option>
+              <option value="intense">Intensa (quase todo dia)</option>
+            </select>
+          </label>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" id="c-hot" />
+          Moro em local quente / transpiro bastante
+        </label>
+        <div class="row">
+          <label>Acordo às
+            <input type="time" id="c-wake" value="07:00" />
+          </label>
+          <label>Durmo às
+            <input type="time" id="c-sleep" value="23:00" />
+          </label>
+        </div>
+        <label>Lembrar a cada
+          <select id="c-interval">
+            <option value="60">1 hora</option>
+            <option value="90" selected>1h30</option>
+            <option value="120">2 horas</option>
+            <option value="180">3 horas</option>
+          </select>
+        </label>
+        <button type="submit" class="btn-primary">Criar minha conta</button>
+        <button type="button" class="btn-link" id="btn-goto-login">Voltar</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- APP PRINCIPAL -->
+  <section id="screen-app" class="screen hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <img id="user-avatar" class="avatar hidden" alt="" />
+        <div>
+          <div class="hello">Olá, <span id="user-name">--</span> 👋</div>
+          <div class="level-badge"><span id="level-name">Gotinha</span> · Nível <span id="level-num">1</span></div>
+        </div>
+      </div>
+      <button id="btn-logout" class="icon-btn" title="Trocar de perfil">⇄</button>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="today">Hoje</button>
+      <button class="tab" data-tab="progress">Progresso</button>
+      <button class="tab" data-tab="album">Álbum</button>
+      <button class="tab" data-tab="profile">Perfil</button>
+    </nav>
+
+    <!-- TAB: HOJE -->
+    <div class="tab-panel active" id="tab-today">
+      <div class="ring-wrap">
+        <svg viewBox="0 0 200 200" class="ring">
+          <circle cx="100" cy="100" r="88" class="ring-bg" />
+          <circle cx="100" cy="100" r="88" class="ring-fg" id="ring-fg" />
+        </svg>
+        <div class="ring-center">
+          <div class="ring-ml"><span id="today-ml">0</span> ml</div>
+          <div class="ring-goal">meta: <span id="today-goal">0</span> ml</div>
+          <div class="ring-pct" id="today-pct">0%</div>
+        </div>
+      </div>
+
+      <div class="quick-add">
+        <button class="qa-btn" data-ml="150">+150ml<br/><small>copo</small></button>
+        <button class="qa-btn" data-ml="250">+250ml<br/><small>copo grande</small></button>
+        <button class="qa-btn" data-ml="500">+500ml<br/><small>garrafa</small></button>
+        <button class="qa-btn qa-custom" id="btn-custom">+ml<br/><small>outro</small></button>
+      </div>
+
+      <div class="strip">
+        <div class="strip-item">
+          <div class="strip-value">🔥 <span id="streak-num">0</span></div>
+          <div class="strip-label">dias seguidos</div>
+        </div>
+        <div class="strip-item">
+          <div class="strip-value">⭐ <span id="xp-num">0</span></div>
+          <div class="strip-label">XP total</div>
+        </div>
+        <div class="strip-item">
+          <div class="strip-value" id="next-reminder">--:--</div>
+          <div class="strip-label">próximo lembrete</div>
+        </div>
+      </div>
+
+      <button id="btn-enable-notif" class="btn-secondary">🔔 Ativar notificações</button>
+      <div id="toast" class="toast hidden"></div>
+    </div>
+
+    <!-- TAB: PROGRESSO -->
+    <div class="tab-panel" id="tab-progress">
+      <h2>Últimos 7 dias</h2>
+      <div class="chart" id="week-chart"></div>
+
+      <h2>Conquistas</h2>
+      <div class="badges" id="badges-grid"></div>
+    </div>
+
+    <!-- TAB: ÁLBUM -->
+    <div class="tab-panel" id="tab-album">
+      <div class="album-header">
+        <h2 class="album-title">Álbum de Emblemas</h2>
+        <p class="album-hint">Beba água para ganhar emblemas aleatórios. Quanto mais rara a cor, mais difícil de conseguir!</p>
+        <div class="album-progress-bar">
+          <div class="album-progress-fill" id="album-progress-fill"></div>
+        </div>
+        <div class="album-progress-text"><span id="album-count">0</span>/<span id="album-total">0</span> colecionados</div>
+      </div>
+      <div class="album-grid" id="album-grid"></div>
+    </div>
+
+    <!-- TAB: PERFIL -->
+    <div class="tab-panel" id="tab-profile">
+      <form id="form-profile" class="form">
+        <label>Nome
+          <input type="text" id="p-name" required />
+        </label>
+        <div class="row">
+          <label>Peso (kg)
+            <input type="number" id="p-weight" min="20" max="250" step="1" required />
+          </label>
+          <label>Atividade física
+            <select id="p-activity">
+              <option value="sedentary">Pouca ou nenhuma</option>
+              <option value="light">Leve (1-3x/semana)</option>
+              <option value="moderate">Moderada (3-5x/semana)</option>
+              <option value="intense">Intensa (quase todo dia)</option>
+            </select>
+          </label>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" id="p-hot" />
+          Moro em local quente / transpiro bastante
+        </label>
+        <div class="row">
+          <label>Acordo às
+            <input type="time" id="p-wake" />
+          </label>
+          <label>Durmo às
+            <input type="time" id="p-sleep" />
+          </label>
+        </div>
+        <label>Lembrar a cada
+          <select id="p-interval">
+            <option value="60">1 hora</option>
+            <option value="90">1h30</option>
+            <option value="120">2 horas</option>
+            <option value="180">3 horas</option>
+          </select>
+        </label>
+        <label>Meta manual (opcional, em ml)
+          <input type="number" id="p-goal-override" min="500" max="8000" step="50" placeholder="deixe em branco para calcular automaticamente" />
+        </label>
+        <button type="submit" class="btn-primary">Salvar alterações</button>
+      </form>
+      <button id="btn-reset-data" class="btn-danger">Apagar meus dados deste perfil</button>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
