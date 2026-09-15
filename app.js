@@ -173,12 +173,26 @@ function checkReminders() {
   const times = computeReminderTimes(currentProfile);
   const nowMin = hmToMinutes(nowHM());
   currentData.notified[date] = currentData.notified[date] || [];
-  for (const t of times) {
-    if (hmToMinutes(t) <= nowMin && !currentData.notified[date].includes(t)) {
-      currentData.notified[date].push(t);
-      saveData();
-      fireNotification();
-      break; // um por vez é suficiente
+
+  if (currentData._reminderBaseline !== date) {
+    // Primeira checagem do dia (ex: acabou de abrir o app): marca como
+    // "vistos" todos os horários que já passaram, sem notificar em rajada.
+    // Só os horários que vencerem dali pra frente, com o app aberto, disparam notificação de verdade.
+    times.forEach((t) => {
+      if (hmToMinutes(t) <= nowMin && !currentData.notified[date].includes(t)) {
+        currentData.notified[date].push(t);
+      }
+    });
+    currentData._reminderBaseline = date;
+    saveData();
+  } else {
+    for (const t of times) {
+      if (hmToMinutes(t) <= nowMin && !currentData.notified[date].includes(t)) {
+        currentData.notified[date].push(t);
+        saveData();
+        fireNotification();
+        break; // um por vez é suficiente
+      }
     }
   }
   const nextEl = document.getElementById("next-reminder");
