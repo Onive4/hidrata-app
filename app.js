@@ -558,6 +558,15 @@ function handleGoogleCredential(response) {
   }
 }
 
+function tryInitGoogleSignIn(attempts) {
+  attempts = attempts || 0;
+  if (window.google && window.google.accounts) {
+    initGoogleSignIn();
+  } else if (attempts < 40) {
+    setTimeout(() => tryInitGoogleSignIn(attempts + 1), 150);
+  }
+}
+
 function initGoogleSignIn() {
   const configured = typeof GOOGLE_CLIENT_ID === "string" && GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_ID.startsWith("COLE_SEU_CLIENT_ID");
   if (!configured || !window.google || !window.google.accounts) return;
@@ -585,7 +594,7 @@ document.addEventListener("DOMContentLoaded", () => {
     renderAuthScreen();
   }
 
-  initGoogleSignIn();
+  tryInitGoogleSignIn();
 
   document.getElementById("btn-goto-create").addEventListener("click", () => {
     document.getElementById("profile-block").classList.add("hidden");
