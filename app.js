@@ -391,6 +391,7 @@ function login(email) {
   renderProgress();
   renderAlbum();
   startReminderLoop();
+  syncPushSubscription();
 }
 
 function logout() {
@@ -514,6 +515,86 @@ function startReminderLoop() {
 function stopReminderLoop() {
   if (reminderTimer) clearInterval(reminderTimer);
   reminderTimer = null;
+}
+
+// ---------- push real (funciona com o app fechado) ----------
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+}
+
+function randomId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return "id-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+function randomSecret() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let str = "";
+  for (const b of bytes) str += String.fromCharCode(b);
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function getOrCreateDeviceCreds() {
+  let creds;
+  try { creds = JSON.parse(localStorage.getItem("hidrata_push_device") || "null"); } catch { creds = null; }
+  if (!creds || !creds.id || !creds.secret) {
+    creds = { id: randomId(), secret: randomSecret() };
+    localStorage.setItem("hidrata_push_device", JSON.stringify(creds));
+  }
+  return creds;
+}
+
+function pushConfigured() {
+  return typeof PUSH_SERVER_URL === "string" && PUSH_SERVER_URL && typeof VAPID_PUBLIC_KEY === "string" && VAPID_PUBLIC_KEY;
+}
+
+async function syncPushSubscription() {
+  if (!pushConfigured() || !currentProfile) return;
+  if (!window.Notification || Notification.permission !== "granted") return;
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const creds = getOrCreateDeviceCreds();
+    await fetch(PUSH_SERVER_URL.replace(/\/$/, "") + "/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceId: creds.id,
+        deviceSecret: creds.secret,
+        subscription: sub.toJSON(),
+        wake: currentProfile.wake,
+        sleep: currentProfile.sleep,
+        interval: Number(currentProfile.interval),
+        tzOffsetMinutes: -new Date().getTimezoneOffset(),
+      }),
+    });
+  } catch (e) {
+    // notificacao push real e um extra; se falhar, os lembretes locais (app aberto) continuam funcionando
+  }
+}
+
+async function unsyncPushSubscription() {
+  if (!pushConfigured()) return;
+  let creds;
+  try { creds = JSON.parse(localStorage.getItem("hidrata_push_device") || "null"); } catch { creds = null; }
+  if (!creds) return;
+  try {
+    await fetch(PUSH_SERVER_URL.replace(/\/$/, "") + "/subscribe", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: creds.id, deviceSecret: creds.secret }),
+    });
+  } catch {}
 }
 
 // ---------- login com Google ----------
@@ -672,6 +753,7 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast("Notificações ativadas! 🔔");
       renderToday();
       fireNotification();
+      syncPushSubscription();
     }
   });
 
@@ -692,6 +774,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("user-name").textContent = currentProfile.name.split(" ")[0];
     showToast("Perfil salvo!");
     renderToday();
+    syncPushSubscription();
   });
 
   document.getElementById("btn-reset-data").addEventListener("click", () => {
@@ -704,6 +787,17 @@ document.addEventListener("DOMContentLoaded", () => {
       renderAlbum();
       showToast("Dados apagados.");
     }
+  });
+
+  document.getElementById("btn-disable-push").addEventListener("click", async () => {
+    await unsyncPushSubscription();
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+    } catch {}
+    localStorage.removeItem("hidrata_push_device");
+    showToast("Notificações remotas desativadas e apagadas do servidor.");
   });
 
   if ("serviceWorker" in navigator) {
