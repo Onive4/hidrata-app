@@ -17,27 +17,52 @@ const RARITY_WEIGHTS = { comum: 60, raro: 25, epico: 12, lendario: 3 };
 const RARITY_LABELS = { comum: "Comum", raro: "Raro", epico: "Épico", lendario: "Lendário" };
 
 const EMBLEMS = [
-  { id: "gota", emoji: "💧", label: "Gota", rarity: "comum" },
-  { id: "nuvem", emoji: "☁️", label: "Nuvem", rarity: "comum" },
-  { id: "copo", emoji: "🥛", label: "Copo", rarity: "comum" },
-  { id: "folha", emoji: "🍃", label: "Folha", rarity: "comum" },
-  { id: "bolha", emoji: "🫧", label: "Bolha", rarity: "comum" },
-  { id: "chuva", emoji: "🌧️", label: "Chuva", rarity: "comum" },
-  { id: "onda", emoji: "🌊", label: "Onda", rarity: "raro" },
-  { id: "concha", emoji: "🐚", label: "Concha", rarity: "raro" },
-  { id: "peixinho", emoji: "🐠", label: "Peixinho", rarity: "raro" },
-  { id: "arcoiris", emoji: "🌈", label: "Arco-íris", rarity: "raro" },
-  { id: "cacto", emoji: "🌵", label: "Cacto Hidratado", rarity: "raro" },
-  { id: "lua", emoji: "🌙", label: "Lua", rarity: "raro" },
-  { id: "cachoeira", emoji: "⛲", label: "Cachoeira", rarity: "epico" },
-  { id: "golfinho", emoji: "🐬", label: "Golfinho", rarity: "epico" },
-  { id: "tartaruga", emoji: "🐢", label: "Tartaruga Marinha", rarity: "epico" },
-  { id: "estrelamar", emoji: "⭐", label: "Estrela do Mar", rarity: "epico" },
-  { id: "iceberg", emoji: "🧊", label: "Iceberg", rarity: "epico" },
-  { id: "sereia", emoji: "🧜‍♀️", label: "Sereia", rarity: "lendario" },
-  { id: "tridente", emoji: "🔱", label: "Tridente de Poseidon", rarity: "lendario" },
-  { id: "baleia", emoji: "🐋", label: "Baleia Mística", rarity: "lendario" },
-  { id: "dragao", emoji: "🐉", label: "Dragão das Águas", rarity: "lendario" },
+  // comuns
+  { id: "gota", emoji: "💧", label: "Gota", rarity: "comum", desc: "A mais básica de todas. Toda coleção começa aqui." },
+  { id: "nuvem", emoji: "☁️", label: "Nuvem", rarity: "comum", desc: "Flutuando por aí, cheia de chuva guardada." },
+  { id: "copo", emoji: "🥛", label: "Copo", rarity: "comum", desc: "Companheiro fiel de todo copo d'água." },
+  { id: "folha", emoji: "🍃", label: "Folha", rarity: "comum", desc: "Carrega orvalho toda manhã." },
+  { id: "bolha", emoji: "🫧", label: "Bolha", rarity: "comum", desc: "Sobe, sobe, sobe... e estoura." },
+  { id: "chuva", emoji: "🌧️", label: "Chuva", rarity: "comum", desc: "Molhando tudo desde sempre." },
+  { id: "poca", emoji: "💦", label: "Poça", rarity: "comum", desc: "Pisou e já era o tênis." },
+  { id: "torneira", emoji: "🚰", label: "Torneira", rarity: "comum", desc: "A fonte mais próxima de água de verdade." },
+  { id: "guardachuva", emoji: "☂️", label: "Guarda-chuva", rarity: "comum", desc: "Proteção contra a própria água." },
+  { id: "redemoinho", emoji: "🌀", label: "Redemoinho", rarity: "comum", desc: "Gira, gira e some no ralo." },
+  { id: "sabonete", emoji: "🧼", label: "Sabonete", rarity: "comum", desc: "Só funciona direito com água por perto." },
+  { id: "balde", emoji: "🪣", label: "Balde", rarity: "comum", desc: "Sempre pronto pra carregar mais água." },
+  // raros
+  { id: "onda", emoji: "🌊", label: "Onda", rarity: "raro", desc: "Vem de longe e quebra na praia." },
+  { id: "concha", emoji: "🐚", label: "Concha", rarity: "raro", desc: "Encoste no ouvido e escute o mar." },
+  { id: "peixinho", emoji: "🐠", label: "Peixinho", rarity: "raro", desc: "Vive 100% hidratado, o tempo todo." },
+  { id: "arcoiris", emoji: "🌈", label: "Arco-íris", rarity: "raro", desc: "Só aparece depois da chuva." },
+  { id: "cacto", emoji: "🌵", label: "Cacto Hidratado", rarity: "raro", desc: "Até quem guarda água merece um gole." },
+  { id: "lua", emoji: "🌙", label: "Lua", rarity: "raro", desc: "Comanda as marés lá de cima." },
+  { id: "praia", emoji: "🏖️", label: "Praia", rarity: "raro", desc: "Onde a água encontra a areia." },
+  { id: "barco", emoji: "⛵", label: "Barco a Vela", rarity: "raro", desc: "Navegando tranquilo, vento e água a favor." },
+  { id: "sol", emoji: "☀️", label: "Sol", rarity: "raro", desc: "Evapora a água pra chover de novo depois." },
+  { id: "pinguim", emoji: "🐧", label: "Pinguim", rarity: "raro", desc: "Nada bem melhor do que anda." },
+  { id: "foca", emoji: "🦭", label: "Foca", rarity: "raro", desc: "Mestra em mergulhos rápidos." },
+  { id: "caranguejo", emoji: "🦀", label: "Caranguejo", rarity: "raro", desc: "Anda de lado, mas sempre perto da água." },
+  // épicos
+  { id: "cachoeira", emoji: "⛲", label: "Cachoeira", rarity: "epico", desc: "Água que nunca para de cair." },
+  { id: "golfinho", emoji: "🐬", label: "Golfinho", rarity: "epico", desc: "O mais esperto de todo o oceano." },
+  { id: "tartaruga", emoji: "🐢", label: "Tartaruga Marinha", rarity: "epico", desc: "Devagar, sempre, por décadas." },
+  { id: "estrelamar", emoji: "⭐", label: "Estrela do Mar", rarity: "epico", desc: "Perde um braço e cresce outro. Resiliência pura." },
+  { id: "iceberg", emoji: "🧊", label: "Iceberg", rarity: "epico", desc: "O que você vê é só a ponta." },
+  { id: "polvo", emoji: "🐙", label: "Polvo", rarity: "epico", desc: "Oito braços, nenhum de fora d'água." },
+  { id: "baleiajubarte", emoji: "🐳", label: "Baleia Jubarte", rarity: "epico", desc: "Canta debaixo d'água pra quem quiser ouvir." },
+  { id: "geleira", emoji: "🏔️", label: "Geleira", rarity: "epico", desc: "Água guardada há milhares de anos." },
+  { id: "tempestade", emoji: "⛈️", label: "Tempestade", rarity: "epico", desc: "Quando o céu decide despejar tudo de uma vez." },
+  { id: "coral", emoji: "🪸", label: "Coral", rarity: "epico", desc: "Uma cidade inteira debaixo d'água." },
+  // lendários
+  { id: "sereia", emoji: "🧜‍♀️", label: "Sereia", rarity: "lendario", desc: "Diz a lenda que canta pra quem bebe água todo dia." },
+  { id: "tridente", emoji: "🔱", label: "Tridente de Poseidon", rarity: "lendario", desc: "Comanda todos os oceanos com um só gesto." },
+  { id: "baleia", emoji: "🐋", label: "Baleia Mística", rarity: "lendario", desc: "Poucos já viram. Menos ainda contam a história." },
+  { id: "dragao", emoji: "🐉", label: "Dragão das Águas", rarity: "lendario", desc: "Guardião lendário das nascentes mais puras." },
+  { id: "reidosmares", emoji: "🧜‍♂️", label: "Rei dos Mares", rarity: "lendario", desc: "Governa as profundezas há eras." },
+  { id: "kraken", emoji: "🦑", label: "Kraken", rarity: "lendario", desc: "Emerge só pra quem já bebeu água suficiente hoje." },
+  { id: "cisne", emoji: "🦢", label: "Cisne Encantado", rarity: "lendario", desc: "Elegância pura deslizando na superfície." },
+  { id: "presagio", emoji: "🌌", label: "Presságio das Marés", rarity: "lendario", desc: "Um sinal raro de que grandes coisas estão por vir." },
 ];
 
 const STREAK_MILESTONES = [
@@ -54,26 +79,33 @@ function dayHasAllSizes(dayLogs) {
   return set.has(150) && set.has(250) && set.has(500);
 }
 
+function dayHasTriple(dayLogs) {
+  return dayLogs.length >= 3;
+}
+function dayHasEarlyAndLate(dayLogs) {
+  return dayLogs.some((e) => hmToMinutes(e.time) < hmToMinutes("08:00")) && dayLogs.some((e) => hmToMinutes(e.time) >= hmToMinutes("22:00"));
+}
+
 const BADGES = [
-  { id: "first_drop", emoji: "💧", label: "Primeira Gota", check: (d) => totalEntries(d) >= 1 },
-  { id: "goal_day", emoji: "🎯", label: "Meta Batida", check: (d) => Object.values(d.goalHit || {}).some(Boolean) },
-  { id: "goal5", emoji: "📅", label: "5 Dias de Meta", check: (d) => Object.values(d.goalHit || {}).filter(Boolean).length >= 5 },
-  { id: "goal14", emoji: "🗓️", label: "Hábito Formado (14 dias de meta)", check: (d) => Object.values(d.goalHit || {}).filter(Boolean).length >= 14 },
-  { id: "streak3", emoji: "🔥", label: "3 Dias Seguidos", check: (d) => d.streak >= 3 || d.bestStreak >= 3 },
-  { id: "streak7", emoji: "🏆", label: "7 Dias Seguidos", check: (d) => d.streak >= 7 || d.bestStreak >= 7 },
-  { id: "streak30", emoji: "👑", label: "30 Dias — Lenda", check: (d) => d.streak >= 30 || d.bestStreak >= 30 },
-  { id: "streak60", emoji: "🌟", label: "60 Dias sem Falhar", check: (d) => d.streak >= 60 || d.bestStreak >= 60 },
-  { id: "streak100", emoji: "🐋", label: "100 Dias — Imparável", check: (d) => d.streak >= 100 || d.bestStreak >= 100 },
-  { id: "early_bird", emoji: "🌅", label: "Madrugador", check: (d) => (d.earlyLogs || 0) >= 1 },
-  { id: "night_owl", emoji: "🌙", label: "Coruja Noturna", check: (d) => (d.nightLogs || 0) >= 1 },
-  { id: "overachiever", emoji: "🚀", label: "Além da Meta", check: (d) => (d.overGoalDays || 0) >= 1 },
-  { id: "big_gulp", emoji: "🥤", label: "Gole Grande (750ml de uma vez)", check: (d) => Object.values(d.logs).some((arr) => arr.some((e) => e.ml >= 750)) },
-  { id: "variety", emoji: "🎨", label: "Combo Completo", check: (d) => Object.values(d.logs).some(dayHasAllSizes) },
-  { id: "hundred", emoji: "💯", label: "100 Copos Registrados", check: (d) => totalEntries(d) >= 100 },
-  { id: "xp1000", emoji: "⭐", label: "1000 XP", check: (d) => d.xp >= 1000 },
-  { id: "album_starter", emoji: "🖼️", label: "Comecei a Colecionar", check: (d) => (d.emblems || []).length >= 1 },
-  { id: "album_half", emoji: "📚", label: "Metade do Álbum", check: (d) => (d.emblems || []).length >= Math.ceil(EMBLEMS.length / 2) },
-  { id: "album_complete", emoji: "🏅", label: "Álbum Completo", check: (d) => (d.emblems || []).length >= EMBLEMS.length },
+  { id: "first_drop", emoji: "💧", label: "Primeira Gota", xp: 20, check: (d) => totalEntries(d) >= 1 },
+  { id: "goal_day", emoji: "🎯", label: "Meta Batida", xp: 20, check: (d) => Object.values(d.goalHit || {}).some(Boolean) },
+  { id: "goal5", emoji: "📅", label: "5 Dias de Meta", xp: 40, check: (d) => Object.values(d.goalHit || {}).filter(Boolean).length >= 5 },
+  { id: "goal14", emoji: "🗓️", label: "Hábito Formado (14 dias de meta)", xp: 80, check: (d) => Object.values(d.goalHit || {}).filter(Boolean).length >= 14 },
+  { id: "hydration_master", emoji: "🏅", label: "30 Dias de Meta no Total", xp: 150, check: (d) => Object.values(d.goalHit || {}).filter(Boolean).length >= 30 },
+  { id: "streak3", emoji: "🔥", label: "3 Dias Seguidos", xp: 30, check: (d) => d.streak >= 3 || d.bestStreak >= 3 },
+  { id: "streak7", emoji: "🏆", label: "7 Dias Seguidos", xp: 60, check: (d) => d.streak >= 7 || d.bestStreak >= 7 },
+  { id: "streak30", emoji: "👑", label: "30 Dias — Lenda", xp: 150, check: (d) => d.streak >= 30 || d.bestStreak >= 30 },
+  { id: "streak60", emoji: "🌟", label: "60 Dias sem Falhar", xp: 250, check: (d) => d.streak >= 60 || d.bestStreak >= 60 },
+  { id: "streak100", emoji: "🎖️", label: "100 Dias — Imparável", xp: 400, check: (d) => d.streak >= 100 || d.bestStreak >= 100 },
+  { id: "early_bird", emoji: "🌅", label: "Madrugador", xp: 15, check: (d) => (d.earlyLogs || 0) >= 1 },
+  { id: "night_owl", emoji: "🌙", label: "Coruja Noturna", xp: 15, check: (d) => (d.nightLogs || 0) >= 1 },
+  { id: "night_and_day", emoji: "🌗", label: "Do Amanhecer ao Anoitecer", xp: 25, check: (d) => Object.values(d.logs).some(dayHasEarlyAndLate) },
+  { id: "triple_day", emoji: "🥤", label: "Maratona do Dia (3+ registros)", xp: 20, check: (d) => Object.values(d.logs).some(dayHasTriple) },
+  { id: "overachiever", emoji: "🚀", label: "Além da Meta", xp: 25, check: (d) => (d.overGoalDays || 0) >= 1 },
+  { id: "big_gulp", emoji: "🥛", label: "Gole Grande (750ml de uma vez)", xp: 20, check: (d) => Object.values(d.logs).some((arr) => arr.some((e) => e.ml >= 750)) },
+  { id: "variety", emoji: "🎨", label: "Combo Completo", xp: 20, check: (d) => Object.values(d.logs).some(dayHasAllSizes) },
+  { id: "hundred", emoji: "💯", label: "100 Copos Registrados", xp: 100, check: (d) => totalEntries(d) >= 100 },
+  { id: "xp1000", emoji: "⭐", label: "1000 XP", xp: 50, check: (d) => d.xp >= 1000 },
 ];
 
 // ---------- estado global em memória ----------
@@ -300,11 +332,13 @@ function checkBadges() {
   for (const b of BADGES) {
     if (!currentData.unlockedBadges.includes(b.id) && b.check(currentData)) {
       currentData.unlockedBadges.push(b.id);
+      currentData.xp += b.xp || 0;
       newly.push(b);
     }
   }
   if (newly.length) {
-    showToast("🏅 Nova conquista: " + newly.map((b) => b.label).join(", "));
+    const totalXp = newly.reduce((s, b) => s + (b.xp || 0), 0);
+    showToast("🏅 Nova conquista: " + newly.map((b) => b.label).join(", ") + ` (+${totalXp} XP)`);
   }
 }
 
@@ -486,6 +520,7 @@ function renderAlbum() {
       <span class="emoji">${e.emoji}</span>
       <div class="label">${owned ? e.label : "???"}</div>
       <div class="rarity-tag">${RARITY_LABELS[e.rarity]}</div>
+      ${owned ? `<div class="emblem-desc">${e.desc}</div>` : ""}
     `;
     grid.appendChild(el);
   });
