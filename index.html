@@ -67,13 +67,8 @@
             <input type="time" id="c-sleep" value="23:00" />
           </label>
         </div>
-        <label>Lembrar a cada
-          <select id="c-interval">
-            <option value="60">1 hora</option>
-            <option value="90" selected>1h30</option>
-            <option value="120">2 horas</option>
-            <option value="180">3 horas</option>
-          </select>
+        <label>Lembrar a cada quantos minutos?
+          <input type="number" id="c-interval" min="15" max="360" step="5" value="90" required />
         </label>
         <button type="submit" class="btn-primary">Criar minha conta</button>
         <button type="button" class="btn-link" id="btn-goto-login">Voltar</button>
@@ -194,13 +189,8 @@
             <input type="time" id="p-sleep" />
           </label>
         </div>
-        <label>Lembrar a cada
-          <select id="p-interval">
-            <option value="60">1 hora</option>
-            <option value="90">1h30</option>
-            <option value="120">2 horas</option>
-            <option value="180">3 horas</option>
-          </select>
+        <label>Lembrar a cada quantos minutos?
+          <input type="number" id="p-interval" min="15" max="360" step="5" required />
         </label>
         <label>Meta manual (opcional, em ml)
           <input type="number" id="p-goal-override" min="500" max="8000" step="50" placeholder="deixe em branco para calcular automaticamente" />

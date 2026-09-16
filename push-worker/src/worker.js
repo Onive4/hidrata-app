@@ -11,8 +11,36 @@ const VAPID_SUBJECT = "https://onive4.github.io/hidrata-app/";
 
 const MAX_BODY_BYTES = 4096;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-const ALLOWED_INTERVALS = new Set([60, 90, 120, 180]);
+const MIN_INTERVAL = 15;
+const MAX_INTERVAL = 360;
 const ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
+
+const MESSAGES = {
+  morning: [
+    "☀️ Bom dia! Comece com um copo d'água antes do café.",
+    "🌅 Seu corpo passou a noite sem beber nada — hora de repor!",
+    "💧 Primeiro gole do dia. Bora começar bem hidratado?",
+  ],
+  evening: [
+    "🌙 Última chance hoje de chegar perto da sua meta!",
+    "🕯️ O dia está acabando — um golinho antes de dormir?",
+    "⏳ Faltam poucas horas pro dia virar. Bora beber água?",
+  ],
+  general: [
+    "💧 Hora de beber água!",
+    "🚰 Seu corpo está pedindo uma pausa pra água.",
+    "🌊 Bora hidratar! Um golinho agora cai bem.",
+    "🥤 Que tal um copo d'água agora?",
+    "💦 Psst... já bebeu água na última hora?",
+    "🧊 Refresca a mente (e o corpo) com um pouco de água.",
+    "🐠 Até os peixes tomariam um gole agora.",
+    "🌵 Não vire um cacto — beba água!",
+  ],
+};
+
+function pickMessage(pool) {
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 function corsHeaders(origin) {
   const allow = ALLOWED_ORIGINS.has(origin) ? origin : "null";
@@ -54,7 +82,8 @@ function validateSubscriptionShape(body) {
   if (typeof keys.p256dh !== "string" || typeof keys.auth !== "string") return "subscription.keys invalido";
   if (!TIME_RE.test(body.wake || "")) return "wake invalido";
   if (!TIME_RE.test(body.sleep || "")) return "sleep invalido";
-  if (!ALLOWED_INTERVALS.has(Number(body.interval))) return "interval invalido";
+  const interval = Number(body.interval);
+  if (!Number.isFinite(interval) || interval < MIN_INTERVAL || interval > MAX_INTERVAL) return "interval invalido";
   const tz = Number(body.tzOffsetMinutes);
   if (!Number.isFinite(tz) || tz < -720 || tz > 840) return "tzOffsetMinutes invalido";
   return null;
@@ -194,10 +223,15 @@ export default {
         const due = times.find((t) => hmToMinutes(t) <= minutes && (rec.lastSlot === null || hmToMinutes(t) > hmToMinutes(rec.lastSlot)));
         if (!due) continue;
 
+        let pool = MESSAGES.general;
+        if (due === times[0]) pool = MESSAGES.morning;
+        else if (due === times[times.length - 1]) pool = MESSAGES.evening;
+        const body = pickMessage(pool);
+
         try {
           await webpush.sendNotification(
             { endpoint: rec.endpoint, keys: rec.keys },
-            JSON.stringify({ title: "Hidrata 💧", body: "Hora de beber água!" })
+            JSON.stringify({ title: "Hidrata", body })
           );
           rec.lastSlot = due;
           await env.SUBS.put(entry.name, JSON.stringify(rec));

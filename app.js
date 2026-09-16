@@ -114,6 +114,7 @@ let currentEmail = null;
 let currentProfile = null;
 let currentData = null;
 let reminderTimer = null;
+let lastLevelNum = null;
 
 // ---------- utilidades de data ----------
 function todayStr() {
@@ -181,6 +182,11 @@ function getDayTotal(d, dateKey) {
   return (d.logs[dateKey] || []).reduce((s, e) => s + e.ml, 0);
 }
 
+function clampInterval(v) {
+  const n = Math.round(Number(v) || 90);
+  return Math.min(360, Math.max(15, n));
+}
+
 // ---------- lembretes ----------
 function computeReminderTimes(profile) {
   const start = hmToMinutes(profile.wake || "07:00");
@@ -222,7 +228,7 @@ function checkReminders() {
       if (hmToMinutes(t) <= nowMin && !currentData.notified[date].includes(t)) {
         currentData.notified[date].push(t);
         saveData();
-        fireNotification();
+        fireNotification(t);
         break; // um por vez é suficiente
       }
     }
@@ -231,18 +237,79 @@ function checkReminders() {
   if (nextEl) nextEl.textContent = nextReminderLabel();
 }
 
-function fireNotification() {
-  showToast("💧 Hora de beber água!");
-  if (window.Notification && Notification.permission === "granted") {
-    const body = "Você já bebeu " + getDayTotal(currentData, todayStr()) + "ml hoje. Bora completar a meta!";
-    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-      navigator.serviceWorker.ready.then((reg) => {
-        reg.showNotification("Hidrata 💧", { body, icon: "icon.svg", badge: "icon.svg", vibrate: [80, 40, 80] });
-      });
-    } else {
-      new Notification("Hidrata 💧", { body, icon: "icon.svg" });
-    }
+const REMINDER_MESSAGES = {
+  morning: [
+    "☀️ Bom dia! Comece com um copo d'água antes do café.",
+    "🌅 Seu corpo passou a noite sem beber nada — hora de repor!",
+    "💧 Primeiro gole do dia. Bora começar bem hidratado?",
+  ],
+  evening: [
+    "🌙 Última chance hoje de chegar perto da sua meta!",
+    "🕯️ O dia está acabando — um golinho antes de dormir?",
+    "⏳ Faltam poucas horas pro dia virar. Bora beber água?",
+  ],
+  behind: [
+    "⚠️ Você está bem atrás da meta hoje — bora recuperar?",
+    "📉 Sua hidratação tá devendo hoje. Um copo agora já ajuda bastante.",
+    "🚨 Hoje tá fraco em água. Que tal um gole agora mesmo?",
+  ],
+  ahead: [
+    "🔥 Quase lá! Só um pouquinho mais pra bater a meta.",
+    "💪 Reta final — falta pouco pra hoje ser 100% hidratado.",
+  ],
+  general: [
+    "💧 Hora de beber água!",
+    "🚰 Seu corpo está pedindo uma pausa pra água.",
+    "🌊 Bora hidratar! Um golinho agora cai bem.",
+    "🥤 Que tal um copo d'água agora?",
+    "💦 Psst... já bebeu água na última hora?",
+    "🧊 Refresca a mente (e o corpo) com um pouco de água.",
+    "🐠 Até os peixes tomariam um gole agora.",
+    "🌵 Não vire um cacto — beba água!",
+  ],
+};
+
+function pickReminderMessage(t, times) {
+  const goal = calcGoal(currentProfile);
+  const total = getDayTotal(currentData, todayStr());
+  const pct = goal > 0 ? total / goal : 0;
+  let pool;
+  if (t === times[0]) pool = REMINDER_MESSAGES.morning;
+  else if (t === times[times.length - 1] && pct < 1) pool = REMINDER_MESSAGES.evening;
+  else if (pct < 0.4 && hmToMinutes(t) >= hmToMinutes("12:00")) pool = REMINDER_MESSAGES.behind;
+  else if (pct >= 0.85 && pct < 1) pool = REMINDER_MESSAGES.ahead;
+  else pool = REMINDER_MESSAGES.general;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function showSystemNotification(body, options) {
+  if (!(window.Notification && Notification.permission === "granted")) return;
+  const opts = { body, icon: "icon-192.png", badge: "icon-192.png", vibrate: [80, 40, 80], ...options };
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+    navigator.serviceWorker.ready.then((reg) => reg.showNotification("Hidrata", opts));
+  } else {
+    new Notification("Hidrata", opts);
   }
+}
+
+function fireNotification(t) {
+  const times = computeReminderTimes(currentProfile);
+  const message = pickReminderMessage(t || nowHM(), times);
+  showToast(message);
+  showSystemNotification(message);
+}
+
+function fireGoalHitNotification() {
+  const pool = [
+    "🎉 Meta batida! Seu corpo agradece.",
+    "🏆 Você bateu a meta de hoje. Mandou bem!",
+    "✨ 100% hidratado hoje. Você é fera!",
+  ];
+  showSystemNotification(pool[Math.floor(Math.random() * pool.length)]);
+}
+
+function fireStreakNotification(n) {
+  showSystemNotification(`🔥 ${n} dias seguidos batendo a meta! Sequência incrível.`);
 }
 
 // ---------- gamificação ----------
@@ -272,6 +339,7 @@ function registerGoalProgress(goal) {
     currentData.lastStreakDate = date;
     currentData.bestStreak = Math.max(currentData.bestStreak || 0, currentData.streak);
     showToast("🎉 Meta do dia batida! +50 XP");
+    fireGoalHitNotification();
   }
   if (total >= goal * 1.5 && !currentData._overFlagged) {
     currentData.overGoalDays = (currentData.overGoalDays || 0) + 1;
@@ -323,6 +391,7 @@ function checkStreakMilestones() {
     if (currentData.streak >= m.n && !currentData.streakMilestones.includes(m.n)) {
       currentData.streakMilestones.push(m.n);
       grantEmblemWithToast(m.minRarity);
+      fireStreakNotification(m.n);
     }
   }
 }
@@ -364,6 +433,13 @@ function addWater(ml) {
   renderToday();
   renderProgress();
   renderAlbum();
+
+  const ringCenter = document.querySelector(".ring-center");
+  if (ringCenter) {
+    ringCenter.classList.remove("pulse");
+    void ringCenter.offsetWidth;
+    ringCenter.classList.add("pulse");
+  }
 }
 
 // ---------- render ----------
@@ -408,6 +484,7 @@ function login(email) {
   currentEmail = email;
   currentProfile = p;
   currentData = loadData(email);
+  lastLevelNum = null;
   localStorage.setItem("hidrata_current", email);
   saveData();
   document.getElementById("screen-auth").classList.add("hidden");
@@ -462,6 +539,14 @@ function renderToday() {
   const lvl = levelInfo(currentData.xp || 0);
   document.getElementById("level-name").textContent = lvl.name;
   document.getElementById("level-num").textContent = lvl.num;
+  const levelBadgeEl = document.querySelector(".level-badge");
+  if (lastLevelNum !== null && lvl.num > lastLevelNum) {
+    levelBadgeEl.classList.remove("levelup");
+    void levelBadgeEl.offsetWidth;
+    levelBadgeEl.classList.add("levelup");
+    showToast(`🎉 Subiu para o nível ${lvl.num}: ${lvl.name}!`);
+  }
+  lastLevelNum = lvl.num;
 
   const notifBtn = document.getElementById("btn-enable-notif");
   if (window.Notification && Notification.permission === "granted") {
@@ -498,10 +583,11 @@ function renderProgress() {
 
   const grid = document.getElementById("badges-grid");
   grid.innerHTML = "";
-  BADGES.forEach((b) => {
+  BADGES.forEach((b, idx) => {
     const unlocked = currentData.unlockedBadges.includes(b.id);
     const el = document.createElement("div");
     el.className = "badge" + (unlocked ? " unlocked" : "");
+    el.style.setProperty("--i", idx);
     el.innerHTML = `<span class="emoji">${b.emoji}</span><div class="label">${b.label}</div>`;
     grid.appendChild(el);
   });
@@ -510,11 +596,12 @@ function renderProgress() {
 function renderAlbum() {
   const grid = document.getElementById("album-grid");
   grid.innerHTML = "";
-  EMBLEMS.forEach((e) => {
+  EMBLEMS.forEach((e, idx) => {
     const owned = currentData.emblems.includes(e.id);
     const count = currentData.emblemCounts[e.id] || 0;
     const el = document.createElement("div");
     el.className = `emblem rarity-${e.rarity}` + (owned ? " owned" : "");
+    el.style.setProperty("--i", idx);
     el.innerHTML = `
       ${owned && count > 1 ? `<div class="count">x${count}</div>` : ""}
       <span class="emoji">${e.emoji}</span>
@@ -749,7 +836,7 @@ document.addEventListener("DOMContentLoaded", () => {
       hot: document.getElementById("c-hot").checked,
       wake: document.getElementById("c-wake").value,
       sleep: document.getElementById("c-sleep").value,
-      interval: Number(document.getElementById("c-interval").value),
+      interval: clampInterval(document.getElementById("c-interval").value),
       goalOverride: null,
       createdAt: Date.now(),
     };
@@ -800,7 +887,7 @@ document.addEventListener("DOMContentLoaded", () => {
     currentProfile.hot = document.getElementById("p-hot").checked;
     currentProfile.wake = document.getElementById("p-wake").value;
     currentProfile.sleep = document.getElementById("p-sleep").value;
-    currentProfile.interval = Number(document.getElementById("p-interval").value);
+    currentProfile.interval = clampInterval(document.getElementById("p-interval").value);
     const override = document.getElementById("p-goal-override").value;
     currentProfile.goalOverride = override ? Number(override) : null;
     const idx = profiles.findIndex((p) => p.email === currentProfile.email);

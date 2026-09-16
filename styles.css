@@ -435,3 +435,48 @@ h2 { font-size: 15px; color: var(--muted); margin: 18px 0 10px; }
 @media (min-width: 480px) {
   .screen { border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
 }
+
+/* ---------- toque e animações ---------- */
+.qa-btn, .tab, .btn-primary, .btn-secondary, .btn-danger, .icon-btn, .profile-chip, .badge, .emblem {
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.qa-btn:active, .btn-primary:active, .btn-secondary:active, .btn-danger:active,
+.icon-btn:active, .profile-chip:active, .tab:active {
+  transform: scale(0.93);
+}
+.qa-btn:active { background: var(--card-2); border-color: var(--teal); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 14px) scale(0.94); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+.toast { animation: toast-in 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.tab-panel.active { animation: fade-in-up 0.25s ease; }
+
+@keyframes ring-pulse {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.07); }
+  100% { transform: scale(1); }
+}
+.ring-center.pulse { animation: ring-pulse 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+.badge, .emblem {
+  animation: pop-in 0.3s ease backwards;
+  animation-delay: calc(var(--i, 0) * 25ms);
+}
+
+@keyframes level-glow {
+  0%, 100% { text-shadow: none; }
+  50% { text-shadow: 0 0 10px var(--teal-light); }
+}
+.level-badge.levelup { animation: level-glow 0.9s ease; }
