@@ -550,8 +550,9 @@ function renderToday() {
 
   const notifBtn = document.getElementById("btn-enable-notif");
   if (window.Notification && Notification.permission === "granted") {
-    notifBtn.textContent = "🔔 Notificações ativadas";
-    notifBtn.disabled = true;
+    notifBtn.textContent = "🔄 Verificar notificações no servidor";
+  } else {
+    notifBtn.textContent = "🔔 Ativar notificações";
   }
 }
 
@@ -881,13 +882,17 @@ document.addEventListener("DOMContentLoaded", () => {
       alert("Este navegador não suporta notificações.");
       return;
     }
+    const alreadyGranted = Notification.permission === "granted";
     const perm = await Notification.requestPermission();
-    if (perm === "granted") {
+    if (perm !== "granted") return;
+    if (!alreadyGranted) {
       showToast("Notificações ativadas! 🔔");
-      renderToday();
       fireNotification();
-      syncPushSubscription();
+    } else {
+      showToast("🔄 Verificando registro no servidor...");
     }
+    renderToday();
+    await syncPushSubscription();
   });
 
   document.getElementById("form-profile").addEventListener("submit", (e) => {
@@ -923,6 +928,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("btn-disable-push").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-disable-push");
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Desativando...";
     await unsyncPushSubscription();
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -930,7 +939,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (sub) await sub.unsubscribe();
     } catch {}
     localStorage.removeItem("hidrata_push_device");
-    showToast("Notificações remotas desativadas e apagadas do servidor.");
+    btn.textContent = "✅ Desativado";
+    showToast("🔕 Notificações remotas desativadas e apagadas do servidor.");
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }, 2500);
   });
 
   if ("serviceWorker" in navigator) {
