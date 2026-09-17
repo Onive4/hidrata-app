@@ -200,10 +200,12 @@ export default {
     webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY);
 
     let cursor;
+    let total = 0;
     do {
       const list = await env.SUBS.list({ prefix: "sub:", cursor });
       cursor = list.cursor;
       for (const entry of list.keys) {
+        total++;
         const raw = await env.SUBS.get(entry.name);
         if (!raw) continue;
         const rec = JSON.parse(raw);
@@ -217,11 +219,15 @@ export default {
           rec.lastSlotDate = dateKey;
           rec.lastSlot = past.length ? past[past.length - 1] : null;
           await env.SUBS.put(entry.name, JSON.stringify(rec));
+          console.log(`${entry.name}: baseline do dia definido (lastSlot=${rec.lastSlot}, agora=${minutes}min)`);
           continue;
         }
 
         const due = times.find((t) => hmToMinutes(t) <= minutes && (rec.lastSlot === null || hmToMinutes(t) > hmToMinutes(rec.lastSlot)));
-        if (!due) continue;
+        if (!due) {
+          console.log(`${entry.name}: nada a enviar (lastSlot=${rec.lastSlot}, agora=${minutes}min, proximos=${times.join(",")})`);
+          continue;
+        }
 
         let pool = MESSAGES.general;
         if (due === times[0]) pool = MESSAGES.morning;
@@ -235,12 +241,16 @@ export default {
           );
           rec.lastSlot = due;
           await env.SUBS.put(entry.name, JSON.stringify(rec));
+          console.log(`${entry.name}: notificacao enviada para o horario ${due}`);
         } catch (e) {
+          console.log(`${entry.name}: falha ao enviar (status=${e.statusCode}, msg=${e.message})`);
           if (e.statusCode === 404 || e.statusCode === 410) {
             await env.SUBS.delete(entry.name); // inscricao expirada: some com o dado
+            console.log(`${entry.name}: inscricao expirada, removida`);
           }
         }
       }
     } while (cursor);
+    console.log(`cron finalizado: ${total} inscricao(oes) verificada(s)`);
   },
 };

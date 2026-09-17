@@ -502,7 +502,7 @@ function login(email) {
   renderProgress();
   renderAlbum();
   startReminderLoop();
-  syncPushSubscription();
+  syncPushSubscription({ silent: true });
 }
 
 function logout() {
@@ -673,10 +673,11 @@ function pushConfigured() {
   return typeof PUSH_SERVER_URL === "string" && PUSH_SERVER_URL && typeof VAPID_PUBLIC_KEY === "string" && VAPID_PUBLIC_KEY;
 }
 
-async function syncPushSubscription() {
-  if (!pushConfigured() || !currentProfile) return;
-  if (!window.Notification || Notification.permission !== "granted") return;
-  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+async function syncPushSubscription(opts) {
+  const silent = opts && opts.silent;
+  if (!pushConfigured() || !currentProfile) return null;
+  if (!window.Notification || Notification.permission !== "granted") return null;
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
   try {
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
@@ -687,7 +688,7 @@ async function syncPushSubscription() {
       });
     }
     const creds = getOrCreateDeviceCreds();
-    await fetch(PUSH_SERVER_URL.replace(/\/$/, "") + "/subscribe", {
+    const resp = await fetch(PUSH_SERVER_URL.replace(/\/$/, "") + "/subscribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -700,8 +701,18 @@ async function syncPushSubscription() {
         tzOffsetMinutes: -new Date().getTimezoneOffset(),
       }),
     });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      console.error("Falha ao registrar push no servidor:", resp.status, errText);
+      if (!silent) showToast("⚠️ Não consegui confirmar o registro no servidor de notificações. Vai funcionar só com o app aberto.");
+      return false;
+    }
+    if (!silent) showToast("✅ Notificações reais confirmadas no servidor (funcionam com o app fechado).");
+    return true;
   } catch (e) {
-    // notificacao push real e um extra; se falhar, os lembretes locais (app aberto) continuam funcionando
+    console.error("Erro ao sincronizar push:", e);
+    if (!silent) showToast("⚠️ Sem conexão com o servidor de notificações agora. Tente de novo mais tarde.");
+    return false;
   }
 }
 
@@ -923,6 +934,15 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    navigator.serviceWorker.register("sw.js").then((reg) => {
+      reg.update().catch(() => {});
+    }).catch(() => {});
+
+    let swRefreshed = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (swRefreshed) return;
+      swRefreshed = true;
+      window.location.reload();
+    });
   }
 });
