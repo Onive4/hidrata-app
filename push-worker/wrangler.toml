@@ -1,4 +1,4 @@
-name = "hidrata-push"
+name = "hidrata-app"
 main = "src/worker.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
@@ -9,3 +9,6 @@ id = "9405d8422764412b8dfe682cca617d53"
 
 [triggers]
 crons = ["*/15 * * * *"]
+
+[observability]
+enabled = true
