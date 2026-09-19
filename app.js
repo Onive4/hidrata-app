@@ -187,6 +187,13 @@ function clampInterval(v) {
   return Math.min(360, Math.max(15, n));
 }
 
+function clampSafetyHours(v) {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 0) return 6;
+  if (n === 0) return 0;
+  return Math.min(24, Math.max(2, n));
+}
+
 // ---------- lembretes ----------
 function computeReminderTimes(profile) {
   const start = hmToMinutes(profile.wake || "07:00");
@@ -626,6 +633,7 @@ function fillProfileForm() {
   document.getElementById("p-wake").value = currentProfile.wake;
   document.getElementById("p-sleep").value = currentProfile.sleep;
   document.getElementById("p-interval").value = String(currentProfile.interval);
+  document.getElementById("p-safety").value = String(currentProfile.safetyHours === undefined ? 6 : currentProfile.safetyHours);
   document.getElementById("p-goal-override").value = currentProfile.goalOverride || "";
 }
 
@@ -700,6 +708,7 @@ async function syncPushSubscription(opts) {
         sleep: currentProfile.sleep,
         interval: Number(currentProfile.interval),
         tzOffsetMinutes: -new Date().getTimezoneOffset(),
+        safetyHours: currentProfile.safetyHours === undefined ? 6 : currentProfile.safetyHours,
       }),
     });
     if (!resp.ok) {
@@ -713,6 +722,29 @@ async function syncPushSubscription(opts) {
   } catch (e) {
     console.error("Erro ao sincronizar push:", e);
     if (!silent) showToast("⚠️ Sem conexão com o servidor de notificações agora. Tente de novo mais tarde.");
+    return false;
+  }
+}
+
+async function sendPushTest() {
+  const creds = getOrCreateDeviceCreds();
+  try {
+    const resp = await fetch(PUSH_SERVER_URL.replace(/\/$/, "") + "/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: creds.id, deviceSecret: creds.secret }),
+    });
+    if (resp.ok) {
+      showToast("📨 Push de teste enviado! Minimize o app: ele deve chegar em instantes.");
+      return true;
+    }
+    const data = await resp.json().catch(() => ({}));
+    console.error("Push de teste falhou:", resp.status, data);
+    showToast("⚠️ O servidor não conseguiu enviar o teste: " + (data.error || "erro " + resp.status));
+    return false;
+  } catch (e) {
+    console.error("Erro no push de teste:", e);
+    showToast("⚠️ Sem conexão com o servidor de notificações agora.");
     return false;
   }
 }
@@ -892,7 +924,12 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast("🔄 Verificando registro no servidor...");
     }
     renderToday();
-    await syncPushSubscription();
+    const registered = await syncPushSubscription({ silent: true });
+    if (registered) {
+      await sendPushTest();
+    } else {
+      showToast("⚠️ Não consegui registrar seu aparelho no servidor de notificações. Vai funcionar só com o app aberto.");
+    }
   });
 
   document.getElementById("form-profile").addEventListener("submit", (e) => {
@@ -904,6 +941,7 @@ document.addEventListener("DOMContentLoaded", () => {
     currentProfile.wake = document.getElementById("p-wake").value;
     currentProfile.sleep = document.getElementById("p-sleep").value;
     currentProfile.interval = clampInterval(document.getElementById("p-interval").value);
+    currentProfile.safetyHours = clampSafetyHours(document.getElementById("p-safety").value);
     const override = document.getElementById("p-goal-override").value;
     currentProfile.goalOverride = override ? Number(override) : null;
     const idx = profiles.findIndex((p) => p.email === currentProfile.email);
