@@ -47,6 +47,21 @@ function pickMessage(pool) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+// web-push envia via https.request do Node, que nao existe no Cloudflare Workers.
+// Usamos a lib so para criptografar/assinar (VAPID) e enviamos com fetch.
+async function sendPush(subscription, payload) {
+  const details = webpush.generateRequestDetails(subscription, payload);
+  const headers = { ...details.headers };
+  delete headers["Content-Length"];
+  delete headers["content-length"];
+  const resp = await fetch(details.endpoint, { method: details.method, headers, body: details.body });
+  if (resp.status < 200 || resp.status > 299) {
+    const err = new Error(`servico de push respondeu ${resp.status}`);
+    err.statusCode = resp.status;
+    throw err;
+  }
+}
+
 function corsHeaders(origin) {
   const allow = ALLOWED_ORIGINS.has(origin) ? origin : "null";
   return {
@@ -197,7 +212,7 @@ async function handleTest(request, env, origin) {
 
   try {
     webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY);
-    await webpush.sendNotification(
+    await sendPush(
       { endpoint: rec.endpoint, keys: rec.keys },
       JSON.stringify({ title: "Hidrata", body: "✅ Teste: as notificações reais estão funcionando!" })
     );
@@ -328,7 +343,7 @@ async function processSubscription(name, env) {
   }
 
   try {
-    await webpush.sendNotification(
+    await sendPush(
       { endpoint: rec.endpoint, keys: rec.keys },
       JSON.stringify({ title: "Hidrata", body: pickMessage(pool) })
     );
