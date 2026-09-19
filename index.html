@@ -201,11 +201,19 @@
         </label>
         <button type="submit" class="btn-primary">Salvar alterações</button>
       </form>
+      <div class="sync-card">
+        <h3>☁️ Sincronização entre aparelhos</h3>
+        <p id="sync-status" class="sync-status"></p>
+        <p class="sync-note">Vai para a nuvem só peso, atividade, horários, intervalo e seu histórico de água e conquistas. Nunca seu e-mail, nome ou foto.</p>
+        <button id="btn-sync-now" class="btn-secondary">🔄 Sincronizar agora</button>
+        <button id="btn-sync-delete" class="btn-secondary">🗑️ Apagar meus dados da nuvem</button>
+      </div>
       <button id="btn-reset-data" class="btn-danger">Apagar meus dados deste perfil</button>
       <button id="btn-disable-push" class="btn-secondary">🔕 Desativar notificações no servidor</button>
     </div>
   </section>
 
   <script src="app.js"></script>
+  <script src="sync.js"></script>
 </body>
 </html>

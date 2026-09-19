@@ -423,7 +423,7 @@ function addWater(ml) {
   const date = todayStr();
   const time = nowHM();
   currentData.logs[date] = currentData.logs[date] || [];
-  currentData.logs[date].push({ time, ml });
+  currentData.logs[date].push({ time, ml, id: randomId(), ts: Date.now() });
   currentData.xp += 10;
   if (hmToMinutes(time) < hmToMinutes("08:00")) currentData.earlyLogs = (currentData.earlyLogs || 0) + 1;
   if (hmToMinutes(time) >= hmToMinutes("22:00")) currentData.nightLogs = (currentData.nightLogs || 0) + 1;
@@ -437,6 +437,7 @@ function addWater(ml) {
 
   checkBadges();
   saveData();
+  scheduleSync();
   renderToday();
   renderProgress();
   renderAlbum();
@@ -510,6 +511,9 @@ function login(email) {
   renderAlbum();
   startReminderLoop();
   syncPushSubscription({ silent: true });
+  resetSyncState();
+  updateSyncUI();
+  scheduleSync(800);
 }
 
 function logout() {
@@ -801,7 +805,9 @@ function handleGoogleCredential(response) {
       wake: "07:00",
       sleep: "23:00",
       interval: 90,
+      safetyHours: 6,
       goalOverride: null,
+      settingsUpdatedAt: 0,
       createdAt: Date.now(),
     };
     profiles.push(profile);
@@ -810,13 +816,24 @@ function handleGoogleCredential(response) {
     showToast("Conta criada com Google! Ajuste seu peso e atividade em Perfil.");
   } else {
     // mantém dados locais já configurados, só atualiza nome/foto vindos do Google
+    // e liga a conta à sincronização (o servidor valida o login antes de aceitar qualquer dado)
     profile.name = payload.name || profile.name;
     profile.picture = payload.picture || profile.picture;
+    profile.authProvider = "google";
     const idx = profiles.findIndex((p) => p.email === email);
     profiles[idx] = profile;
     saveProfiles();
     login(email);
   }
+  startCloudSession(email, response.credential);
+}
+
+function startCloudSession(email, credential) {
+  if (typeof establishSession !== "function") return;
+  establishSession(email, credential).then((ok) => {
+    updateSyncUI();
+    if (ok) syncNow();
+  });
 }
 
 function tryInitGoogleSignIn(attempts) {
@@ -881,7 +898,9 @@ document.addEventListener("DOMContentLoaded", () => {
       wake: document.getElementById("c-wake").value,
       sleep: document.getElementById("c-sleep").value,
       interval: clampInterval(document.getElementById("c-interval").value),
+      safetyHours: 6,
       goalOverride: null,
+      settingsUpdatedAt: Date.now(),
       createdAt: Date.now(),
     };
     profiles.push(profile);
@@ -942,6 +961,7 @@ document.addEventListener("DOMContentLoaded", () => {
     currentProfile.sleep = document.getElementById("p-sleep").value;
     currentProfile.interval = clampInterval(document.getElementById("p-interval").value);
     currentProfile.safetyHours = clampSafetyHours(document.getElementById("p-safety").value);
+    currentProfile.settingsUpdatedAt = Date.now();
     const override = document.getElementById("p-goal-override").value;
     currentProfile.goalOverride = override ? Number(override) : null;
     const idx = profiles.findIndex((p) => p.email === currentProfile.email);
@@ -951,13 +971,16 @@ document.addEventListener("DOMContentLoaded", () => {
     showToast("Perfil salvo!");
     renderToday();
     syncPushSubscription();
+    scheduleSync(1000);
   });
 
   document.getElementById("btn-reset-data").addEventListener("click", () => {
     if (confirm("Isso vai apagar todo o histórico e XP deste perfil. Continuar?")) {
       localStorage.removeItem("hidrata_data_" + currentEmail);
       currentData = loadData(currentEmail);
+      currentData.resetAt = Date.now();
       saveData();
+      scheduleSync(1000);
       renderToday();
       renderProgress();
       renderAlbum();

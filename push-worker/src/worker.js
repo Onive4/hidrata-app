@@ -1,9 +1,15 @@
 import webpush from "web-push";
+import { verifyGoogleIdToken } from "./auth.js";
 
 const ALLOWED_ORIGINS = new Set([
   "https://onive4.github.io",
   "http://localhost:8080",
 ]);
+
+const GOOGLE_CLIENT_ID = "757207136611-ov9q5vcsj35cbrpii3uj4ckcdghhju6b.apps.googleusercontent.com";
+const SESSION_TTL_SECONDS = 60 * 24 * 3600;
+const MAX_AUTH_BODY_BYTES = 8192;
+const MAX_SYNC_BODY_BYTES = 262144;
 
 const VAPID_PUBLIC_KEY =
   "BGaHpocQhW4uet-gc5UtHdy_VW1n6w50y8_F0IesufoxraQph2kpGkzo82suXas4Mj9cPh9p7DOXIqu38iFW77o";
@@ -66,8 +72,8 @@ function corsHeaders(origin) {
   const allow = ALLOWED_ORIGINS.has(origin) ? origin : "null";
   return {
     "Access-Control-Allow-Origin": allow,
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Vary": "Origin",
   };
 }
@@ -75,7 +81,7 @@ function corsHeaders(origin) {
 function json(data, status, origin) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders(origin) },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders(origin) },
   });
 }
 
@@ -251,6 +257,93 @@ async function handleUnsubscribe(request, env, origin) {
   return json({ ok: true }, 200, origin);
 }
 
+function toB64url(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function readJsonBody(request, maxBytes) {
+  const raw = await request.text();
+  if (raw.length > maxBytes) return { error: "payload grande demais", status: 413 };
+  try {
+    return { body: JSON.parse(raw) };
+  } catch {
+    return { error: "json invalido", status: 400 };
+  }
+}
+
+// Sessao opaca: o servidor guarda so o hash do token, com validade.
+async function authenticate(request, env) {
+  const m = /^Bearer ([A-Za-z0-9_-]{32,64})$/.exec(request.headers.get("Authorization") || "");
+  if (!m) return null;
+  const raw = await env.SUBS.get("sess:" + (await sha256Hex(m[1])));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw).u || null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleAuthGoogle(request, env, origin) {
+  const parsed = await readJsonBody(request, MAX_AUTH_BODY_BYTES);
+  if (parsed.error) return json({ error: parsed.error }, parsed.status, origin);
+
+  let payload;
+  try {
+    payload = await verifyGoogleIdToken(parsed.body.idToken, { clientId: GOOGLE_CLIENT_ID });
+  } catch (e) {
+    console.log(`auth recusada: ${e.message}`);
+    return json({ error: "login do Google nao validado" }, 401, origin);
+  }
+
+  // a chave do usuario e um hash do ID do Google: nem o e-mail nem o ID bruto ficam gravados
+  const userKey = "user:" + (await sha256Hex("google:" + payload.sub));
+  const token = toB64url(crypto.getRandomValues(new Uint8Array(32)));
+  await env.SUBS.put("sess:" + (await sha256Hex(token)), JSON.stringify({ u: userKey, c: Date.now() }), {
+    expirationTtl: SESSION_TTL_SECONDS,
+  });
+  return json({ token, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 }, 200, origin);
+}
+
+async function handleSyncGet(request, env, origin) {
+  const userKey = await authenticate(request, env);
+  if (!userKey) return json({ error: "sessao invalida" }, 401, origin);
+  const raw = await env.SUBS.get(userKey);
+  if (!raw) return json({ version: 0, blob: null }, 200, origin);
+  const rec = JSON.parse(raw);
+  return json({ version: rec.version, updatedAt: rec.updatedAt, blob: rec.blob }, 200, origin);
+}
+
+async function handleSyncPut(request, env, origin) {
+  const userKey = await authenticate(request, env);
+  if (!userKey) return json({ error: "sessao invalida" }, 401, origin);
+  const parsed = await readJsonBody(request, MAX_SYNC_BODY_BYTES);
+  if (parsed.error) return json({ error: parsed.error }, parsed.status, origin);
+  const { baseVersion, blob } = parsed.body || {};
+  if (!Number.isInteger(baseVersion) || baseVersion < 0) return json({ error: "baseVersion invalido" }, 400, origin);
+  if (!blob || typeof blob !== "object" || Array.isArray(blob) || blob.v !== 1) return json({ error: "blob invalido" }, 400, origin);
+  if (!blob.settings || typeof blob.settings !== "object" || !blob.data || typeof blob.data !== "object") {
+    return json({ error: "blob invalido" }, 400, origin);
+  }
+
+  const curRaw = await env.SUBS.get(userKey);
+  const currentVersion = curRaw ? JSON.parse(curRaw).version : 0;
+  if (baseVersion !== currentVersion) return json({ error: "conflito de versao", version: currentVersion }, 409, origin);
+
+  const rec = { version: currentVersion + 1, updatedAt: Date.now(), blob };
+  await env.SUBS.put(userKey, JSON.stringify(rec));
+  return json({ version: rec.version, updatedAt: rec.updatedAt }, 200, origin);
+}
+
+async function handleSyncDelete(request, env, origin) {
+  const userKey = await authenticate(request, env);
+  if (!userKey) return json({ error: "sessao invalida" }, 401, origin);
+  await env.SUBS.delete(userKey);
+  return json({ ok: true }, 200, origin);
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
@@ -273,6 +366,18 @@ export default {
     }
     if (url.pathname === "/health" && request.method === "GET") {
       return json({ ok: true, hasVapidKey: !!env.VAPID_PRIVATE_KEY }, 200, origin);
+    }
+    if (url.pathname === "/auth/google" && request.method === "POST") {
+      return handleAuthGoogle(request, env, origin);
+    }
+    if (url.pathname === "/sync" && request.method === "GET") {
+      return handleSyncGet(request, env, origin);
+    }
+    if (url.pathname === "/sync" && request.method === "PUT") {
+      return handleSyncPut(request, env, origin);
+    }
+    if (url.pathname === "/sync" && request.method === "DELETE") {
+      return handleSyncDelete(request, env, origin);
     }
     return json({ error: "nao encontrado" }, 404, origin);
   },
