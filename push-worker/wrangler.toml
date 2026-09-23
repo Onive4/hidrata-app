@@ -11,4 +11,4 @@ id = "9405d8422764412b8dfe682cca617d53"
 crons = ["*/15 * * * *"]
 
 [observability]
-enabled = true
+enabled = false
