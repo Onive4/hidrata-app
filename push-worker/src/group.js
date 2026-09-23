@@ -2,14 +2,15 @@
    Modelo de dados no KV (sem transações, então cada pessoa escreve só no próprio registro):
      grp:<gid>          o grupo (nome, meta em %, Jarra, lista de membros). Escrito por quem cria, entra, sai e pelo fechamento da semana.
      gm:<gid>:<uh>      o que UM membro compartilha (apelido, dias, emblemas...). Escrito só por ele.
-     ug:<uh>            em que grupo o usuário está (no máximo um).
+     ug:<uh>            em quais grupos o usuário está (até 3): { gids: [...] }. Formato antigo { gid } ainda é lido.
      inv:<CODIGO>       código de convite -> grupo.
      ud:<uh> / dv:<id>  aparelhos de push do usuário (para cutucar/aplaudir/presentear).
      gx:<uh>            caixa de entrada: presentes e reações esperando serem vistos.
      rl:...             limites de uso (expiram sozinhos).
    <uh> é o hash do ID do Google (a mesma chave do resto do app): nunca e-mail, nome real ou o ID bruto. */
 
-const MAX_MEMBERS = 12;
+const MAX_MEMBERS = 15;
+const MAX_GROUPS_PER_USER = 3;
 const MAX_BODY_BYTES = 8192;
 const MEMBER_TTL_SECONDS = 60 * 24 * 3600;
 const DEVICE_LINK_TTL_SECONDS = 90 * 24 * 3600;
@@ -257,13 +258,34 @@ async function membersOf(env, grp) {
   return grp.members;
 }
 
-async function getMyGroup(env, uh) {
+// Em quais grupos a pessoa está. Lê o formato antigo ({ gid }) e o novo ({ gids }).
+async function userGroups(env, uh) {
   const ug = await getJson(env, `ug:${uh}`);
-  if (!ug || !GID_RE.test(ug.gid || "")) return null;
-  const [grp, me] = await Promise.all([getJson(env, `grp:${ug.gid}`), getJson(env, `gm:${ug.gid}:${uh}`)]);
+  if (!ug) return [];
+  const list = Array.isArray(ug.gids) ? ug.gids : GID_RE.test(ug.gid || "") ? [ug.gid] : [];
+  return [...new Set(list.filter((g) => typeof g === "string" && GID_RE.test(g)))].slice(0, MAX_GROUPS_PER_USER);
+}
+async function saveUserGroups(env, uh, gids) {
+  if (gids.length) await putJson(env, `ug:${uh}`, { gids });
+  else await env.SUBS.delete(`ug:${uh}`);
+}
+async function groupSummaries(env, gids, known) {
+  return (await Promise.all(gids.map(async (id) => {
+    const g = known && known.id === id ? known : await getJson(env, `grp:${id}`);
+    return g ? { id, name: g.name } : null;
+  }))).filter(Boolean);
+}
+
+// O grupo pedido (ou o primeiro, se nenhum foi pedido). Devolve também todos os ids da pessoa.
+async function getMyGroup(env, uh, wanted) {
+  const gids = await userGroups(env, uh);
+  if (!gids.length) return null;
+  const gid = wanted ? (gids.includes(wanted) ? wanted : null) : gids[0];
+  if (!gid) return null;
+  const [grp, me] = await Promise.all([getJson(env, `grp:${gid}`), getJson(env, `gm:${gid}:${uh}`)]);
   if (!grp || !me) {
-    await env.SUBS.delete(`ug:${uh}`); // vínculo velho (grupo apagado ou registro expirado)
-    return null;
+    await saveUserGroups(env, uh, gids.filter((g) => g !== gid)); // vínculo velho (grupo apagado ou registro expirado)
+    return wanted ? null : getMyGroup(env, uh);
   }
   const list = await membersOf(env, grp);
   if (!list.includes(uh)) {
@@ -271,9 +293,8 @@ async function getMyGroup(env, uh) {
     grp.members = [...list, uh];
     await putJson(env, `grp:${grp.id}`, grp);
   }
-  return { grp, me };
+  return { grp, me, gids };
 }
-
 async function loadMembers(env, grp, myUh, myRec) {
   const uhs = await membersOf(env, grp);
   const out = await Promise.all(uhs.map(async (uh) => ({ uh, rec: uh === myUh && myRec ? myRec : await getJson(env, `gm:${grp.id}:${uh}`) })));
@@ -304,31 +325,41 @@ async function removeFromInbox(env, uh, ids) {
   else await env.SUBS.delete(`gx:${uh}`);
 }
 
-// Sai do grupo apagando o que ele compartilhou, o vínculo de push e o que estava na caixa de entrada.
-async function removeUserFromGroup(env, uh) {
-  const ug = await getJson(env, `ug:${uh}`);
-  await env.SUBS.delete(`ug:${uh}`);
-  const ud = await getJson(env, `ud:${uh}`);
-  if (ud && Array.isArray(ud.ids)) for (const id of ud.ids) if (DEVICE_ID_RE.test(id)) await env.SUBS.delete(`dv:${id}`);
-  await env.SUBS.delete(`ud:${uh}`);
-  await env.SUBS.delete(`gx:${uh}`);
-  if (!ug || !GID_RE.test(ug.gid || "")) return;
-  const gid = ug.gid;
-  await env.SUBS.delete(`gm:${gid}:${uh}`);
-  const grp = await getJson(env, `grp:${gid}`);
-  if (!grp) return;
-  grp.members = (await membersOf(env, grp)).filter((x) => x !== uh);
-  const rest = await loadMembers(env, grp);
-  if (!rest.length) {
-    await env.SUBS.delete(`grp:${gid}`);
-    await env.SUBS.delete(`inv:${grp.code}`);
-    return;
+// Sai de UM grupo (ou de todos, se nenhum for indicado) apagando o que a pessoa compartilhava.
+// Quando não sobra nenhum grupo, apaga também o vínculo de push e a caixa de entrada.
+async function removeUserFromGroup(env, uh, only) {
+  const gids = await userGroups(env, uh);
+  const leaving = only ? gids.filter((g) => g === only) : gids;
+  for (const gid of leaving) {
+    await env.SUBS.delete(`gm:${gid}:${uh}`);
+    const grp = await getJson(env, `grp:${gid}`);
+    if (!grp) continue;
+    grp.members = (await membersOf(env, grp)).filter((x) => x !== uh);
+    const rest = await loadMembers(env, grp);
+    if (!rest.length) {
+      await env.SUBS.delete(`grp:${gid}`);
+      await env.SUBS.delete(`inv:${grp.code}`);
+      continue;
+    }
+    if (grp.creator === uh) {
+      rest.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
+      grp.creator = rest[0].uh;
+    }
+    await putJson(env, `grp:${gid}`, grp);
   }
-  if (grp.creator === uh) {
-    rest.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
-    grp.creator = rest[0].uh;
+  const remaining = gids.filter((g) => !leaving.includes(g));
+  await saveUserGroups(env, uh, remaining);
+  if (!remaining.length) {
+    const ud = await getJson(env, `ud:${uh}`);
+    if (ud && Array.isArray(ud.ids)) for (const id of ud.ids) if (DEVICE_ID_RE.test(id)) await env.SUBS.delete(`dv:${id}`);
+    await env.SUBS.delete(`ud:${uh}`);
+    await env.SUBS.delete(`gx:${uh}`);
   }
-  await putJson(env, `grp:${gid}`, grp);
+}
+
+// Quem está em mais de um grupo recebe o nome do grupo nos avisos (para saber de qual veio).
+async function groupSuffix(env, uh, grp) {
+  return (await userGroups(env, uh)).length > 1 ? ` · ${grp.name}` : "";
 }
 // ---------- push para os aparelhos de um usuário ----------
 async function pushToUser(env, deps, uh, body) {
@@ -363,13 +394,14 @@ function publicMember(m, myUh, creatorUh) {
 
 async function buildState(env, deps, uh, mine, now) {
   let grp = mine.grp;
+  const gids = mine.gids || (await userGroups(env, uh));
   let members = await loadMembers(env, grp, uh, mine.me);
   grp = await closePastWeek(env, grp, members, now);
   const week = currentWeekOf(grp, now);
   const j = jarNumbers(grp, members, week);
   const inbox = (await readInbox(env, uh))
     .filter((x) => x && GIFT_ID_RE.test(x.id || "") && INBOX_KINDS.includes(x.k) && (x.k !== "gift" || EMBLEM_LABELS[x.e]))
-    .map((x) => ({ id: x.id, k: x.k, from: x.from, e: x.e, at: x.at }));
+    .map((x) => ({ id: x.id, k: x.k, from: x.from, e: x.e, at: x.at, gn: typeof x.gn === "string" ? x.gn : undefined }));
   members.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
   return {
     group: {
@@ -379,6 +411,7 @@ async function buildState(env, deps, uh, mine, now) {
       jarStreak: grp.jarStreak || 0, jarBest: grp.jarBest || 0, jarWeeks: grp.jarWeeks || 0, jarLevel: levelForStreak(grp.jarStreak || 0),
       lastResult: grp.lastResult || null,
     },
+    groups: await groupSummaries(env, gids, grp),
     members: members.map((m) => publicMember(m, uh, grp.creator)),
     inbox,
     serverNow: now,
@@ -396,6 +429,7 @@ export async function handleGroup(request, env, origin, url, deps) {
   const uh = userKey.startsWith("user:") ? userKey.slice(5) : userKey;
   const now = Date.now();
   const method = request.method;
+  const wantedG = url.searchParams.get("g") || "";
 
   async function body() {
     const parsed = await readJsonBody(request, MAX_BODY_BYTES);
@@ -403,10 +437,12 @@ export async function handleGroup(request, env, origin, url, deps) {
   }
   const bad = (msg, status = 400) => json({ error: msg }, status, origin);
 
-  // --- estado do meu grupo ---
+  if (wantedG && !GID_RE.test(wantedG)) return bad("grupo invalido");
+
+  // --- estado do meu grupo (o pedido em ?g=, ou o primeiro) ---
   if (path === "/group" && method === "GET") {
-    const mine = await getMyGroup(env, uh);
-    if (!mine) return json({ group: null }, 200, origin);
+    const mine = await getMyGroup(env, uh, wantedG);
+    if (!mine) return json({ group: null, groups: await groupSummaries(env, await userGroups(env, uh)) }, 200, origin);
     return json(await buildState(env, deps, uh, mine, now), 200, origin);
   }
 
@@ -414,7 +450,8 @@ export async function handleGroup(request, env, origin, url, deps) {
   if (path === "/group" && method === "POST") {
     const { b, res } = await body();
     if (res) return res;
-    if (await getMyGroup(env, uh)) return bad("voce ja esta em um grupo", 409);
+    const myGids = await userGroups(env, uh);
+    if (myGids.length >= MAX_GROUPS_PER_USER) return bad("limite de grupos por pessoa atingido", 409);
     const name = cleanText(b.name, 30);
     if (!name) return bad("nome do grupo invalido (use letras, numeros e espacos, ate 30)");
     const me = parseMe(b.me, now);
@@ -435,15 +472,16 @@ export async function handleGroup(request, env, origin, url, deps) {
     await putJson(env, `grp:${gid}`, grp);
     await putJson(env, `gm:${gid}:${uh}`, rec, MEMBER_TTL_SECONDS);
     await env.SUBS.put(`inv:${code}`, gid);
-    await putJson(env, `ug:${uh}`, { gid });
-    return json(await buildState(env, deps, uh, { grp, me: rec }, now), 200, origin);
+    await saveUserGroups(env, uh, [...myGids, gid]);
+    return json(await buildState(env, deps, uh, { grp, me: rec, gids: [...myGids, gid] }, now), 200, origin);
   }
 
   // --- entrar por convite ---
   if (path === "/group/join" && method === "POST") {
     const { b, res } = await body();
     if (res) return res;
-    if (await getMyGroup(env, uh)) return bad("voce ja esta em um grupo", 409);
+    const myGids = await userGroups(env, uh);
+    if (myGids.length >= MAX_GROUPS_PER_USER) return bad("limite de grupos por pessoa atingido", 409);
     const failKey = `rl:jf:${uh}`;
     const fails = Number((await env.SUBS.get(failKey)) || 0);
     if (fails >= 10) return bad("muitas tentativas; tente de novo daqui a pouco", 429);
@@ -454,20 +492,21 @@ export async function handleGroup(request, env, origin, url, deps) {
       await env.SUBS.put(failKey, String(fails + 1), { expirationTtl: 3600 });
       return bad("codigo de convite nao encontrado", 404);
     }
+    if (myGids.includes(gid)) return bad("voce ja esta nesse grupo", 409);
     const me = parseMe(b.me, now);
     if (me.error) return bad(me.error);
     const members = await loadMembers(env, grp);
     if (members.length >= MAX_MEMBERS) return bad("este grupo esta cheio", 409);
     const rec = { ...me.rec, mid: await memberId(gid, uh, deps), joinedAt: now, updatedAt: now };
     await putJson(env, `gm:${gid}:${uh}`, rec, MEMBER_TTL_SECONDS);
-    await putJson(env, `ug:${uh}`, { gid });
+    await saveUserGroups(env, uh, [...myGids, gid]);
     const fresh = (await getJson(env, `grp:${gid}`)) || grp;
     if (!(await membersOf(env, fresh)).includes(uh)) {
       fresh.members = [...fresh.members, uh];
       await putJson(env, `grp:${gid}`, fresh);
     }
     grp.members = fresh.members;
-    return json(await buildState(env, deps, uh, { grp, me: rec }, now), 200, origin);
+    return json(await buildState(env, deps, uh, { grp, me: rec, gids: [...myGids, gid] }, now), 200, origin);
   }
 
   // --- vínculo de aparelho para push (não exige estar em grupo) ---
@@ -490,9 +529,20 @@ export async function handleGroup(request, env, origin, url, deps) {
     return json({ ok: true }, 200, origin);
   }
 
-  // daqui para baixo, só quem está em um grupo
-  const mine = await getMyGroup(env, uh);
-  if (!mine) return bad("voce nao esta em um grupo", 404);
+  // --- receber presentes e reações (marca como vistos; vale para a pessoa, não para um grupo) ---
+  if (path === "/group/inbox/ack" && method === "POST") {
+    const { b, res } = await body();
+    if (res) return res;
+    const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string" && GIFT_ID_RE.test(x)).slice(0, 20) : [];
+    if (ids.length) await removeFromInbox(env, uh, ids);
+    return json({ ok: true }, 200, origin);
+  }
+
+  // daqui para baixo, só quem está no grupo indicado em ?g=
+  const mine = await getMyGroup(env, uh, wantedG);
+  if (!mine) return bad("voce nao esta nesse grupo", 404);
+  // quem está em mais de um grupo precisa dizer qual (evita cutucar ou remover no grupo errado)
+  if (!wantedG && mine.gids.length > 1) return bad("informe o grupo (?g=)", 400);
   const { grp } = mine;
 
   // --- atualizar o que eu compartilho ---
@@ -516,7 +566,7 @@ export async function handleGroup(request, env, origin, url, deps) {
 
   // --- sair ---
   if (path === "/group/leave" && method === "POST") {
-    await removeUserFromGroup(env, uh);
+    await removeUserFromGroup(env, uh, grp.id);
     return json({ ok: true }, 200, origin);
   }
 
@@ -570,16 +620,7 @@ export async function handleGroup(request, env, origin, url, deps) {
     if (!MID_RE.test(b.mid || "")) return bad("membro invalido");
     const target = (await loadMembers(env, grp, uh, mine.me)).find((m) => m.rec.mid === b.mid);
     if (!target || target.uh === uh) return bad("membro nao encontrado", 404);
-    await removeUserFromGroup(env, target.uh);
-    return json({ ok: true }, 200, origin);
-  }
-
-  // --- receber presentes (marca como entregues) ---
-  if (path === "/group/inbox/ack" && method === "POST") {
-    const { b, res } = await body();
-    if (res) return res;
-    const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string" && GIFT_ID_RE.test(x)).slice(0, 20) : [];
-    if (ids.length) await removeFromInbox(env, uh, ids);
+    await removeUserFromGroup(env, target.uh, grp.id);
     return json({ ok: true }, 200, origin);
   }
 
@@ -600,8 +641,8 @@ export async function handleGroup(request, env, origin, url, deps) {
       const pairKey = `rl:poke:${uh}:${target.uh}`;
       if (await env.SUBS.get(pairKey)) return bad("voce ja cutucou essa pessoa hoje", 429);
       await env.SUBS.put(pairKey, "1", { expirationTtl: 20 * 3600 });
-      await addToInbox(env, target.uh, { id: randomToken(12), k: "poke", from, at: now });
-      if (target.rec.pushOk) await pushToUser(env, deps, target.uh, POKE_MESSAGES[Math.floor(Math.random() * POKE_MESSAGES.length)](from));
+      await addToInbox(env, target.uh, { id: randomToken(12), k: "poke", from, at: now, gn: grp.name });
+      if (target.rec.pushOk) await pushToUser(env, deps, target.uh, POKE_MESSAGES[Math.floor(Math.random() * POKE_MESSAGES.length)](from) + (await groupSuffix(env, target.uh, grp)));
       return json({ ok: true }, 200, origin);
     }
 
@@ -616,8 +657,8 @@ export async function handleGroup(request, env, origin, url, deps) {
       const used = ((await env.SUBS.get(pairKey)) || "").split(",").filter(Boolean);
       if (used.includes(kind)) return bad("voce ja mandou essa reacao hoje", 429);
       await env.SUBS.put(pairKey, [...used, kind].join(","), { expirationTtl: 20 * 3600 });
-      await addToInbox(env, target.uh, { id: randomToken(12), k: kind, from, at: now });
-      if (target.rec.pushOk) await pushToUser(env, deps, target.uh, text);
+      await addToInbox(env, target.uh, { id: randomToken(12), k: kind, from, at: now, gn: grp.name });
+      if (target.rec.pushOk) await pushToUser(env, deps, target.uh, text + (await groupSuffix(env, target.uh, grp)));
       return json({ ok: true }, 200, origin);
     }
 
@@ -628,13 +669,13 @@ export async function handleGroup(request, env, origin, url, deps) {
     if ((target.rec.emblems || []).includes(emblem)) return bad("essa pessoa ja tem esse emblema", 409);
     if ((await readInbox(env, target.uh)).some((x) => x.k === "gift" && x.e === emblem)) return bad("esse presente ja esta a caminho", 409);
     const giftId = randomToken(12);
-    await addToInbox(env, target.uh, { id: giftId, k: "gift", e: emblem, from, at: now });
+    await addToInbox(env, target.uh, { id: giftId, k: "gift", e: emblem, from, at: now, gn: grp.name });
     // desconta já do repetido registrado, para não presentear duas vezes antes do próximo envio do app
     const dups = { ...mine.me.dups };
     if (dups[emblem] > 1) dups[emblem]--;
     else delete dups[emblem];
     await putJson(env, `gm:${grp.id}:${uh}`, { ...mine.me, dups, updatedAt: now }, MEMBER_TTL_SECONDS);
-    if (target.rec.pushOk) await pushToUser(env, deps, target.uh, `🎁 ${from} te deu o emblema ${EMBLEM_LABELS[emblem]}! Abra o app para receber.`);
+    if (target.rec.pushOk) await pushToUser(env, deps, target.uh, `🎁 ${from} te deu o emblema ${EMBLEM_LABELS[emblem]}! Abra o app para receber.` + (await groupSuffix(env, target.uh, grp)));
     return json({ ok: true, giftId }, 200, origin);
   }
   return null;

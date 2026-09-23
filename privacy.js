@@ -106,14 +106,16 @@ function buildExport() {
     emblemas: d.emblemCounts || {},
     presentesRecebidos: d.giftIn || [],
     presentesEnviados: d.giftOut || [],
-    grupo: p.groupPrefs
+    grupos: p.groupPrefs
       ? {
           consentimento: p.groupPrefs.consent === true,
-          apelido: p.groupPrefs.nick || null,
-          apareceNoGrupo: p.groupPrefs.visible !== false,
-          mostrarFoto: p.groupPrefs.showPhoto === true,
-          receberAvisos: p.groupPrefs.pushOk !== false,
-          estaEmGrupo: p.groupPrefs.inGroup === true,
+          gruposQueParticipa: (p.groupPrefs.gids || []).length,
+          porGrupo: Object.values(p.groupPrefs.groups || {}).map((g) => ({
+            apelido: g.nick || null,
+            apareceNoGrupo: g.visible !== false,
+            mostrarFoto: g.showPhoto === true,
+            receberAvisos: g.pushOk !== false,
+          })),
         }
       : null,
   };

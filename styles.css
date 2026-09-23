@@ -778,3 +778,9 @@ h2 { font-size: 15px; color: var(--muted); margin: 18px 0 10px; }
   #g-water { transition: none !important; }
   .g-btn, .g-chip, .g-tile, .g-invite, .g-react, .g-stepper button, .g-switch { transition: none !important; }
 }
+/* seletor de grupos */
+.g-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.g-tabchip { max-width: 100%; }
+.g-tabname { max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-tabchip.add { color: var(--teal-light); border-style: dashed; }
+.g-tabchip.add[aria-pressed="true"] { color: #04211d; border-style: solid; }

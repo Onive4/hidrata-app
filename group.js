@@ -38,13 +38,15 @@ let groupError = null;
 let groupPollTimer = null;
 let groupSnapTimer = null;
 let groupGoalTimer = null;
-let groupLastSnap = { hash: "", at: 0 };
+let groupLastSnap = {}; // por grupo: { hash, at }
+let groupCache = {}; // último estado visto de cada grupo (troca de grupo instantânea)
 let groupUi = freshGroupUi();
+const GROUP_MAX_PER_USER = 3;
 
 function freshGroupUi() {
   return {
     other: null, filter: "all", sel: "", kickArm: "", leaveArm: false, dirty: false, msg: "", msgOk: false, albumEl: null,
-    needFeed: false, feed: [], enter: false, prevDays: {}, lastDrops: null, lastFill: null, animSel: "", animGrid: false, sig: "", hold: 0, pendingRender: false,
+    needFeed: false, feed: [], enter: false, adding: false, prevDays: {}, lastDrops: null, lastFill: null, animSel: "", animGrid: false, sig: "", hold: 0, pendingRender: false,
   };
 }
 
@@ -64,6 +66,47 @@ function plural(n, one, many) {
 function groupPrefs() {
   if (!currentProfile.groupPrefs) currentProfile.groupPrefs = {};
   return currentProfile.groupPrefs;
+}
+// Cada grupo tem as próprias preferências (apelido, foto, aparecer, avisos, novidades...).
+function gpFor(gid) {
+  const p = groupPrefs();
+  if (!p.groups) p.groups = {};
+  const id = gid || "_";
+  if (!p.groups[id]) p.groups[id] = {};
+  return p.groups[id];
+}
+function activeGid() {
+  return groupPrefs().active || "";
+}
+function gp() {
+  return gpFor(activeGid());
+}
+function knownGids() {
+  const g = groupPrefs().gids;
+  return Array.isArray(g) ? g : [];
+}
+function knowsGroups() {
+  return knownGids().length > 0 || groupPrefs().inGroup === true;
+}
+// quem já usava um grupo só: as preferências soltas passam para o grupo
+function migrateLegacyPrefs(gid) {
+  const p = groupPrefs();
+  if (p.groups && p.groups[gid]) return;
+  const g = gpFor(gid);
+  for (const k of ["nick", "visible", "showPhoto", "pushOk", "seen", "recapSeen", "fullShown"]) if (p[k] !== undefined) g[k] = p[k];
+}
+function dropGroup(id) {
+  const p = groupPrefs();
+  p.gids = knownGids().filter((g) => g !== id);
+  delete p.inGroup;
+  if (p.groups) delete p.groups[id];
+  delete groupCache[id];
+  delete groupLastSnap[id];
+  if (p.active === id || !p.gids.includes(p.active)) {
+    p.active = p.gids[0] || "";
+    groupState = groupCache[p.active] || null;
+  }
+  saveProfiles();
 }
 function keyDiffDays(a, b) {
   const pa = a.split("-").map(Number);
@@ -144,10 +187,16 @@ function setGroupMsg(text, ok) {
 }
 
 // ---------- rede ----------
-async function groupApi(method, path, body) {
+// Quase toda rota diz de qual grupo fala (?g=); criar, entrar, aparelhos e caixa de entrada não.
+function groupPath(method, path, gid) {
+  if (gid === null || path === "/group/devices" || path === "/group/join" || path === "/group/inbox/ack" || (method === "POST" && path === "/group")) return path;
+  const g = gid === undefined ? activeGid() : gid;
+  return g ? path + "?g=" + encodeURIComponent(g) : path;
+}
+async function groupApi(method, path, body, gid) {
   const session = getSession(currentEmail);
   if (!session) throw Object.assign(new Error("sem sessao"), { code: "unauthorized" });
-  const resp = await fetch(syncBase() + path, {
+  const resp = await fetch(syncBase() + groupPath(method, path, gid), {
     method,
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + session.token },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -164,10 +213,10 @@ async function groupApi(method, path, body) {
 }
 
 // ---------- o que eu compartilho ----------
-function buildGroupMe() {
-  const prefs = groupPrefs();
+function buildGroupMe(gid) {
+  const prefs = gid ? gpFor(gid) : {};
   const me = {
-    nick: cleanGroupText(prefs.nick, 20) || defaultNick(),
+    nick: cleanGroupText(prefs.nick, 20) || cleanGroupText(groupPrefs().nick, 20) || defaultNick(),
     tz: -new Date().getTimezoneOffset(),
     visible: prefs.visible !== false,
     pushOk: prefs.pushOk !== false,
@@ -203,35 +252,54 @@ function buildGroupMe() {
   });
 }
 
-async function pushGroupSnapshot(force) {
-  const me = buildGroupMe();
+async function pushGroupSnapshot(force, gid) {
+  const id = gid === undefined ? activeGid() : gid;
+  const me = buildGroupMe(id);
   const hash = stableStringify(me);
-  if (!force && hash === groupLastSnap.hash && Date.now() - groupLastSnap.at < GROUP_SNAPSHOT_MAX_AGE_MS) return true;
-  const r = await groupApi("PUT", "/group/me", me);
+  const last = groupLastSnap[id];
+  if (!force && last && hash === last.hash && Date.now() - last.at < GROUP_SNAPSHOT_MAX_AGE_MS) return true;
+  const r = await groupApi("PUT", "/group/me", me, id);
   if (r.status === 404) {
-    groupPrefs().inGroup = false;
-    saveProfiles();
-    groupState = null;
+    if (id) dropGroup(id);
+    else {
+      delete groupPrefs().inGroup;
+      groupState = null;
+      saveProfiles();
+    }
     return false;
   }
   if (!r.ok) throw new Error("PUT " + r.status);
-  groupLastSnap = { hash, at: Date.now() };
+  groupLastSnap[id] = { hash, at: Date.now() };
   return true;
+}
+
+// Mantém o que eu compartilho em dia em TODOS os meus grupos (não só no que está na tela).
+async function pushAllSnapshots(force) {
+  const ids = knownGids().length ? knownGids().slice() : [""];
+  let activeOk = true;
+  for (const id of ids) {
+    try {
+      const ok = await pushGroupSnapshot(force, id);
+      if (id === activeGid() && !ok) activeOk = false;
+    } catch (e) {
+      if (id === activeGid() || ids.length === 1) throw e;
+    }
+  }
+  return activeOk;
 }
 
 // chamado depois de registrar água, sincronizar, mudar emblemas etc.
 function scheduleGroupSnapshot(delay) {
-  if (!currentProfile || !groupUsable() || !groupPrefs().inGroup) return;
+  if (!currentProfile || !groupUsable() || !knowsGroups()) return;
   clearTimeout(groupSnapTimer);
   groupSnapTimer = setTimeout(async () => {
     const email = currentEmail;
     try {
-      const ok = await pushGroupSnapshot(false);
+      const ok = await pushAllSnapshots(false);
       if (ok && email === currentEmail && groupTabActive()) refreshGroup();
     } catch {}
   }, delay === undefined ? GROUP_SNAPSHOT_DEBOUNCE_MS : delay);
 }
-
 async function linkPushDevice() {
   const prefs = groupPrefs();
   if (!window.Notification || Notification.permission !== "granted") return;
@@ -271,7 +339,8 @@ async function receiveInbox(inbox) {
       if (!d.emblems.includes(it.e)) d.emblems.push(it.e);
       gifts.push({ from, emblem });
     } else if (GROUP_INCOMING_TEXT[it.k] && !seen.has(it.id)) {
-      reacts.push({ k: it.k, text: GROUP_INCOMING_TEXT[it.k](from) });
+      const gn = knownGids().length > 1 ? cleanGroupText(it.gn, 30) : null; // com vários grupos, diz de qual veio
+      reacts.push({ k: it.k, text: GROUP_INCOMING_TEXT[it.k](from) + (gn ? " · " + gn : "") });
     }
     seen.add(it.id);
   }
@@ -350,7 +419,7 @@ function summarizeForFeed(state) {
   return { members, jar: state.group.jarLevel || "" };
 }
 function computeFeed(state) {
-  const prefs = groupPrefs();
+  const prefs = gp();
   const now = summarizeForFeed(state);
   const before = prefs.seen;
   const items = [];
@@ -388,24 +457,35 @@ async function refreshGroup() {
   const email = currentEmail;
   const prefs = groupPrefs();
   try {
-    if (prefs.inGroup) await pushGroupSnapshot(false);
-    const r = await groupApi("GET", "/group");
-    if (currentEmail !== email) return;
-    if (!r.ok || !r.data) throw new Error("GET " + r.status);
-    if (!r.data.group) {
-      prefs.inGroup = false;
-      groupState = null;
-    } else {
-      const first = !prefs.inGroup;
-      prefs.inGroup = true;
-      groupState = r.data;
-      if (groupUi.needFeed) {
-        groupUi.feed = computeFeed(r.data);
-        groupUi.needFeed = false;
+    if (knowsGroups()) await pushAllSnapshots(false);
+    let r = null;
+    // se o grupo ativo não existe mais, tenta o primeiro que sobrou
+    for (let attempt = 0; attempt < 2; attempt++) {
+      r = await groupApi("GET", "/group");
+      if (currentEmail !== email) return;
+      if (!r.ok || !r.data) throw new Error("GET " + r.status);
+      const groups = Array.isArray(r.data.groups) ? r.data.groups.filter((g) => g && typeof g.id === "string") : [];
+      const before = knownGids();
+      prefs.gids = groups.map((g) => g.id);
+      delete prefs.inGroup;
+      if (r.data.group) {
+        const id = r.data.group.id;
+        prefs.active = id;
+        migrateLegacyPrefs(id);
+        groupState = r.data;
+        groupCache[id] = r.data;
+        if (groupUi.needFeed) {
+          groupUi.feed = computeFeed(r.data);
+          groupUi.needFeed = false;
+        }
+        if (!before.includes(id)) scheduleGroupSnapshot(500);
+        await receiveInbox(r.data.inbox);
+        linkPushDevice().catch(() => {});
+        break;
       }
-      if (first) scheduleGroupSnapshot(500);
-      await receiveInbox(r.data.inbox);
-      linkPushDevice().catch(() => {});
+      groupState = null;
+      prefs.active = groups[0] ? groups[0].id : "";
+      if (!groups.length) break;
     }
     saveProfiles();
     groupError = null;
@@ -417,6 +497,25 @@ async function refreshGroup() {
   }
 }
 
+// troca o grupo que está na tela (usa o último estado visto enquanto busca o novo)
+function switchGroup(id) {
+  const p = groupPrefs();
+  if (p.active === id && !groupUi.adding) return;
+  p.active = id;
+  saveProfiles();
+  groupState = groupCache[id] || null;
+  groupUi = freshGroupUi();
+  groupUi.enter = true;
+  groupUi.needFeed = true;
+  renderGroup();
+  refreshGroup();
+}
+function startAddGroup() {
+  groupUi.adding = true;
+  groupUi.enter = true;
+  groupUi.msg = "";
+  renderGroup();
+}
 function startGroupPoll() {
   stopGroupPoll();
   groupPollTimer = setInterval(() => {
@@ -432,7 +531,8 @@ function stopGroupPoll() {
 function groupOnLogin() {
   groupState = null;
   groupError = null;
-  groupLastSnap = { hash: "", at: 0 };
+  groupLastSnap = {};
+  groupCache = {};
   groupUi = freshGroupUi();
   renderGroup();
   if (groupUsable()) refreshGroup();
@@ -463,11 +563,16 @@ function groupOnTab(tab) {
 }
 function groupAfterCloudDelete() {
   const prefs = groupPrefs();
-  prefs.inGroup = false;
+  delete prefs.inGroup;
+  prefs.gids = [];
+  prefs.active = "";
+  prefs.groups = {};
   prefs.deviceLinkedAt = 0;
-  delete prefs.seen;
   saveProfiles();
   groupState = null;
+  groupCache = {};
+  groupLastSnap = {};
+  groupUi = freshGroupUi();
   renderGroup();
 }
 
@@ -502,8 +607,8 @@ function declineGroupConsent() {
 function friendlyGroupError(action, r) {
   const s = r && r.status;
   const table = {
-    create: { 409: "Você já está em um grupo.", 400: "Confira o nome do grupo e o seu apelido (letras, números e espaços)." },
-    join: { 404: "Não encontrei esse convite. Confira o código.", 409: "Esse grupo está cheio ou você já está em um grupo.", 429: "Muitas tentativas. Tente de novo daqui a pouco.", 400: "Confira o código e o seu apelido." },
+    create: { 409: "Você já está em 3 grupos, o limite. Saia de um para criar outro.", 400: "Confira o nome do grupo e o seu apelido (letras, números e espaços)." },
+    join: { 404: "Não encontrei esse convite. Confira o código.", 409: "Não deu para entrar: o grupo está cheio, você já está nele ou já está em 3 grupos.", 429: "Muitas tentativas. Tente de novo daqui a pouco.", 400: "Confira o código e o seu apelido." },
     poke: { 409: "Essa pessoa já contou o dia de hoje.", 429: "Você já cutucou essa pessoa hoje." },
     cheer: { 409: "Ainda não dá para mandar essa reação.", 429: "Você já mandou essa reação hoje." },
     gift: { 409: "Esse presente não dá agora: a pessoa já tem o emblema ou já há um a caminho." },
@@ -545,14 +650,20 @@ async function joinGroup(code, nick) {
 }
 function onJoinedGroup(data) {
   const prefs = groupPrefs();
-  prefs.inGroup = true;
+  const id = data.group.id;
+  prefs.gids = [...new Set([...knownGids(), id])];
+  prefs.active = id;
+  delete prefs.inGroup;
   prefs.deviceLinkedAt = 0;
-  prefs.seen = summarizeForFeed(data);
+  const mine = gpFor(id);
+  mine.nick = prefs.nick;
+  mine.seen = summarizeForFeed(data);
   saveProfiles();
   groupState = data;
+  groupCache[id] = data;
   groupUi = freshGroupUi();
   groupUi.enter = true;
-  groupLastSnap = { hash: stableStringify(buildGroupMe()), at: Date.now() };
+  groupLastSnap[id] = { hash: stableStringify(buildGroupMe(id)), at: Date.now() };
   linkPushDevice().catch(() => {});
   renderGroup();
   FX.confetti(24);
@@ -560,17 +671,21 @@ function onJoinedGroup(data) {
 }
 
 async function leaveGroup() {
+  const id = activeGid();
   const r = await runGroupAction(() => groupApi("POST", "/group/leave"));
   if (!r || !r.ok) return;
-  const prefs = groupPrefs();
-  prefs.inGroup = false;
-  prefs.deviceLinkedAt = 0;
-  delete prefs.seen;
+  if (id) dropGroup(id);
+  else {
+    delete groupPrefs().inGroup;
+    groupState = null;
+  }
+  if (!knownGids().length) groupPrefs().deviceLinkedAt = 0;
   saveProfiles();
-  groupState = null;
   groupUi = freshGroupUi();
+  groupUi.enter = true;
   renderGroup();
-  showToast("Você saiu do grupo e o que você compartilhava foi apagado.");
+  if (knownGids().length) refreshGroup();
+  showToast("Você saiu do grupo e o que você compartilhava lá foi apagado.");
 }
 
 function actKey(kind, mid) {
@@ -746,7 +861,7 @@ async function sendGift(m, emblem, fromEl) {
 
 // interruptores mudam no lugar (a animação do botão não some com uma nova montagem da tela)
 async function saveGroupPref(key, value, keepScreen) {
-  const prefs = groupPrefs();
+  const prefs = gp();
   prefs[key] = value;
   saveProfiles();
   if (!keepScreen) renderGroup();
@@ -792,7 +907,7 @@ async function kickMember(m) {
 // Só remonta a tela quando algo mudou de verdade (a atualização a cada minuto não mexe na tela à toa).
 function groupSig() {
   const prefs = (currentProfile && currentProfile.groupPrefs) || {};
-  return [groupError, groupBusy, JSON.stringify(groupState, (k, v) => (k === "serverNow" ? undefined : v)), JSON.stringify(prefs), todayStr(), currentData ? currentData.emblems.length + ":" + currentData.giftIn.length + ":" + currentData.giftOut.length : "", groupUi.feed.length, groupUi.msg].join("|");
+  return [groupError, groupBusy, JSON.stringify(groupState, (k, v) => (k === "serverNow" ? undefined : v)), JSON.stringify(prefs), todayStr(), currentData ? currentData.emblems.length + ":" + currentData.giftIn.length + ":" + currentData.giftOut.length : "", groupUi.feed.length, groupUi.msg, groupUi.adding].join("|");
 }
 
 function renderGroup(force) {
@@ -823,14 +938,19 @@ function renderGroup(force) {
   else if (!syncAvailable()) root.appendChild(gateCard("Grupos indisponíveis", "O servidor não está configurado neste aparelho."));
   else if (prefs.consent !== true) root.appendChild(consentGate());
   else if (!getSession(currentEmail)) root.appendChild(gateCard("Falta entrar de novo com o Google", "Para abrir seu grupo, toque em ⇄ (Trocar de perfil) e entre com o Google outra vez. É rápido."));
-  else if (inGroup()) {
+  else if (groupUi.adding) {
+    if (knowsGroups()) root.appendChild(groupTabsNode());
+    renderForms(root);
+  } else if (inGroup()) {
     renderDashboard(root);
     dashboard = true;
-  } else if (prefs.inGroup && !groupError) renderSkeleton(root);
-  else if (prefs.inGroup && groupError) root.appendChild(retryCard());
+  } else if (knowsGroups() && !groupError) {
+    if (groupState || knownGids().length > 1) root.appendChild(groupTabsNode());
+    renderSkeleton(root);
+  } else if (knowsGroups() && groupError) root.appendChild(retryCard());
   else if (groupBusy && !groupError) renderSkeleton(root);
   else renderForms(root);
-  if (groupError && !inGroup() && !prefs.inGroup) root.appendChild(h("p", "g-msg", groupError));
+  if (groupError && !inGroup() && !knowsGroups()) root.appendChild(h("p", "g-msg", groupError));
   if (groupUi.enter && (dashboard || root.children.length)) {
     groupUi.enter = false;
     [...root.children].forEach((c, i) => c.style.setProperty("--i", Math.min(i, 8)));
@@ -838,6 +958,30 @@ function renderGroup(force) {
     setTimeout(() => root.classList.remove("g-enter"), 1200);
   }
   window.scrollTo(0, y);
+}
+
+// seletor no topo: um botão por grupo (até 3) e o "+" para criar ou entrar em outro
+function groupTabsNode() {
+  const list = ((groupState && groupState.groups) || knownGids().map((id) => ({ id, name: (groupCache[id] && groupCache[id].group.name) || "Grupo" }))).slice(0, GROUP_MAX_PER_USER);
+  const wrap = h("div", "g-tabs");
+  wrap.setAttribute("role", "group");
+  wrap.setAttribute("aria-label", "Seus grupos");
+  for (const g of list) {
+    const c = h("button", "g-chip g-tabchip", h("span", "g-tabname", String(g.name || "Grupo")));
+    c.type = "button";
+    c.setAttribute("aria-pressed", String(g.id === activeGid() && !groupUi.adding));
+    c.addEventListener("click", () => switchGroup(g.id));
+    wrap.appendChild(c);
+  }
+  if (list.length < GROUP_MAX_PER_USER) {
+    const add = h("button", "g-chip g-tabchip add", "＋ Grupo");
+    add.type = "button";
+    add.setAttribute("aria-pressed", String(groupUi.adding));
+    add.setAttribute("aria-label", "Criar ou entrar em outro grupo");
+    add.addEventListener("click", startAddGroup);
+    wrap.appendChild(add);
+  }
+  return wrap;
 }
 
 function gateCard(title, text) {
@@ -861,7 +1005,7 @@ function consentGate() {
     "g-card",
     h("h3", null, "👥 Beba água em grupo"),
     h("p", null, "Junte a família ou os amigos com um código de convite. Cada pessoa tem a própria meta: o grupo enche uma Jarra juntos durante a semana, se cutucam, reagem, se presenteiam e comparam os álbuns de emblemas."),
-    h("p", null, "Ninguém vê quanto você bebeu. Você escolhe o que aparece e pode sair quando quiser."),
+    h("p", null, "Dá para participar de até 3 grupos (ex.: família e trabalho), cada um com seu apelido. Ninguém vê quanto você bebeu. Você escolhe o que aparece e pode sair quando quiser."),
     btn
   );
 }
@@ -880,7 +1024,7 @@ function inputField(label, id, value, opts) {
 
 function renderForms(root) {
   const prefs = groupPrefs();
-  const nick = inputField("Seu apelido no grupo", "g-nick", prefs.nick || defaultNick(), { max: 20 });
+  const nick = inputField("Seu apelido neste grupo", "g-nick", prefs.nick || defaultNick(), { max: 20 });
   const name = inputField("Nome do grupo", "g-name", "", { max: 30, placeholder: "Ex.: Família Silva" });
   const code = inputField("Código de convite", "g-code", "", { max: 16, placeholder: "AGUA-XXXXXX", caps: true });
   const create = h("button", "btn-primary", "Criar grupo");
@@ -959,15 +1103,16 @@ function renderDashboard(root) {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done, () => showToast("Selecione e copie: " + code));
     else showToast("Selecione e copie: " + code);
   });
+  root.appendChild(groupTabsNode());
   root.appendChild(h("header", "g-head", h("div", null, h("h2", "g-title", g.name), h("p", "g-meta", `${st.members.length} ${plural(st.members.length, "pessoa", "pessoas")} · cada uma com a própria meta`)), invite));
 
   // resumo da semana passada
   const lr = g.lastResult;
-  if (lr && lr.members >= 2 && groupPrefs().recapSeen !== lr.week) {
+  if (lr && lr.members >= 2 && gp().recapSeen !== lr.week) {
     const close = h("button", "btn-link", "Fechar");
     close.type = "button";
     close.addEventListener("click", () => {
-      groupPrefs().recapSeen = lr.week;
+      gp().recapSeen = lr.week;
       saveProfiles();
       renderGroup();
     });
@@ -1061,7 +1206,7 @@ function renderJarSection(g, week, todayIdx, drops) {
 
   // depois de montada: número contando, gotas caindo na Jarra e confete quando ela enche
   const gained = prevDrops !== null && drops > prevDrops;
-  const prefs = groupPrefs();
+  const prefs = gp();
   const celebrate = isFull && prefs.fullShown !== week;
   if (celebrate) {
     prefs.fullShown = week;
@@ -1349,7 +1494,7 @@ function switchRow(title, hint, checked, onChange, disabled) {
 
 function renderPrivacySection(st) {
   const g = st.group;
-  const prefs = groupPrefs();
+  const prefs = gp();
   const sec = h("section", "g-card");
   sec.appendChild(h("h3", null, "O que o grupo vê"));
   sec.appendChild(
@@ -1362,10 +1507,10 @@ function renderPrivacySection(st) {
   );
 
   const hasPhoto = !!safeGroupPhoto(currentProfile.picture);
-  sec.appendChild(switchRow("Aparecer no grupo", prefs.visible === false ? "Você fica oculto e suas gotas saem da Jarra. Você ainda vê o grupo." : "Você e suas gotas estão visíveis para todos.", prefs.visible !== false, (v) => saveGroupPref("visible", v, true)));
-  sec.appendChild(switchRow("Mostrar minha foto do Google", !hasPhoto ? "Sua conta do Google não tem uma foto que dê para usar." : prefs.showPhoto === true ? "Ligado: só os membros deste grupo veem a foto." : "Desligado: o grupo vê só a sua inicial.", prefs.showPhoto === true && hasPhoto, (v) => saveGroupPref("showPhoto", v, true), !hasPhoto));
+  sec.appendChild(switchRow("Aparecer neste grupo", prefs.visible === false ? "Você fica oculto e suas gotas saem da Jarra. Você ainda vê o grupo." : "Você e suas gotas estão visíveis para todos.", prefs.visible !== false, (v) => saveGroupPref("visible", v, true)));
+  sec.appendChild(switchRow("Mostrar minha foto neste grupo", !hasPhoto ? "Sua conta do Google não tem uma foto que dê para usar." : prefs.showPhoto === true ? "Ligado: só os membros deste grupo veem a foto." : "Desligado: o grupo vê só a sua inicial.", prefs.showPhoto === true && hasPhoto, (v) => saveGroupPref("showPhoto", v, true), !hasPhoto));
   const notifOn = window.Notification && Notification.permission === "granted";
-  sec.appendChild(switchRow("Receber avisos do grupo", notifOn ? "Cutucadas, reações, presentes e o resumo de domingo." : "Ative as notificações na aba Hoje para receber avisos com o app fechado.", prefs.pushOk !== false, (v) => saveGroupPref("pushOk", v, true)));
+  sec.appendChild(switchRow("Receber avisos deste grupo", notifOn ? "Cutucadas, reações, presentes e o resumo de domingo." : "Ative as notificações na aba Hoje para receber avisos com o app fechado.", prefs.pushOk !== false, (v) => saveGroupPref("pushOk", v, true)));
 
   // apelido
   const nick = document.createElement("input");
@@ -1382,7 +1527,7 @@ function renderPrivacySection(st) {
     setGroupMsg("");
     saveGroupPref("nick", n);
   });
-  sec.appendChild(h("div", "g-manage", h("p", "g-note", "Seu apelido no grupo"), h("div", "g-inline", nick, saveNick)));
+  sec.appendChild(h("div", "g-manage", h("p", "g-note", "Seu apelido neste grupo"), h("div", "g-inline", nick, saveNick)));
 
   if (g.isCreator) {
     const manage = h("div", "g-manage", h("p", "g-note", "Você criou este grupo. Só você muda a meta, cria um novo convite e remove pessoas."));
