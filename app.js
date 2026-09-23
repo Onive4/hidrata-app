@@ -1,5 +1,12 @@
 /* Hidrata — app local (sem servidor). Dados ficam em localStorage neste aparelho/navegador. */
 
+// Anti-clickjacking: o GitHub Pages não permite cabeçalho X-Frame-Options, então o app
+// se recusa a rodar quando outro site tenta exibi-lo dentro de uma moldura (iframe).
+if (window.top !== window.self && location.hostname !== "localhost") {
+  document.documentElement.textContent = "";
+  throw new Error("Hidrata não pode ser exibido dentro de outro site.");
+}
+
 const ACTIVITY_BONUS = { sedentary: 0, light: 300, moderate: 500, intense: 800 };
 const HOT_BONUS = 350;
 
@@ -472,13 +479,23 @@ function renderAuthScreen() {
     profiles.forEach((p) => {
       const chip = document.createElement("div");
       chip.className = "profile-chip";
-      const avatarHtml = p.picture
-        ? `<img class="avatar" src="${escapeHtml(p.picture)}" alt="" />`
+      const avatarHtml = safePictureUrl(p.picture)
+        ? `<img class="avatar" src="${escapeHtml(safePictureUrl(p.picture))}" alt="" />`
         : `<span class="drop">💧</span>`;
       chip.innerHTML = `<div class="chip-info">${avatarHtml}<div><div class="name">${escapeHtml(p.name)}</div><div class="email">${escapeHtml(p.email)}</div></div></div><div>➜</div>`;
       chip.addEventListener("click", () => login(p.email));
       list.appendChild(chip);
     });
+  }
+}
+
+// Só aceita foto de perfil vinda do domínio de imagens do Google, por HTTPS.
+function safePictureUrl(u) {
+  try {
+    const x = new URL(u);
+    return x.protocol === "https:" && /(^|\.)googleusercontent\.com$/.test(x.hostname) ? x.href : null;
+  } catch {
+    return null;
   }
 }
 
@@ -499,8 +516,8 @@ function login(email) {
   document.getElementById("screen-app").classList.remove("hidden");
   document.getElementById("user-name").textContent = p.name.split(" ")[0];
   const avatarEl = document.getElementById("user-avatar");
-  if (p.picture) {
-    avatarEl.src = p.picture;
+  if (safePictureUrl(p.picture)) {
+    avatarEl.src = safePictureUrl(p.picture);
     avatarEl.classList.remove("hidden");
   } else {
     avatarEl.classList.add("hidden");
@@ -525,6 +542,7 @@ function logout() {
   document.getElementById("screen-app").classList.add("hidden");
   document.getElementById("screen-auth").classList.remove("hidden");
   renderAuthScreen();
+  tryInitGoogleSignIn();
 }
 
 function renderToday() {
@@ -797,7 +815,7 @@ function handleGoogleCredential(response) {
     profile = {
       email,
       name: payload.name || email.split("@")[0],
-      picture: payload.picture || null,
+      picture: safePictureUrl(payload.picture),
       authProvider: "google",
       weightKg: 70,
       activity: "light",
@@ -818,7 +836,7 @@ function handleGoogleCredential(response) {
     // mantém dados locais já configurados, só atualiza nome/foto vindos do Google
     // e liga a conta à sincronização (o servidor valida o login antes de aceitar qualquer dado)
     profile.name = payload.name || profile.name;
-    profile.picture = payload.picture || profile.picture;
+    profile.picture = safePictureUrl(payload.picture) || safePictureUrl(profile.picture);
     profile.authProvider = "google";
     const idx = profiles.findIndex((p) => p.email === email);
     profiles[idx] = profile;
@@ -836,18 +854,38 @@ function startCloudSession(email, credential) {
   });
 }
 
+let googleScriptRequested = false;
+let googleButtonReady = false;
+
+function googleConfigured() {
+  return typeof GOOGLE_CLIENT_ID === "string" && GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_ID.startsWith("COLE_SEU_CLIENT_ID");
+}
+
+// O script do Google só é baixado quando a tela de login aparece: quem já está
+// logado (ou usa só conta local) não envia nenhuma requisição ao Google.
+function loadGoogleScript() {
+  if (googleScriptRequested || (window.google && window.google.accounts)) return;
+  googleScriptRequested = true;
+  const s = document.createElement("script");
+  s.src = "https://accounts.google.com/gsi/client";
+  s.async = true;
+  document.head.appendChild(s);
+}
+
 function tryInitGoogleSignIn(attempts) {
+  if (googleButtonReady || !googleConfigured()) return;
+  loadGoogleScript();
   attempts = attempts || 0;
   if (window.google && window.google.accounts) {
     initGoogleSignIn();
-  } else if (attempts < 40) {
+  } else if (attempts < 80) {
     setTimeout(() => tryInitGoogleSignIn(attempts + 1), 150);
   }
 }
 
 function initGoogleSignIn() {
-  const configured = typeof GOOGLE_CLIENT_ID === "string" && GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_ID.startsWith("COLE_SEU_CLIENT_ID");
-  if (!configured || !window.google || !window.google.accounts) return;
+  if (googleButtonReady || !googleConfigured() || !window.google || !window.google.accounts) return;
+  googleButtonReady = true;
   document.getElementById("google-signin-section").classList.remove("hidden");
   google.accounts.id.initialize({
     client_id: GOOGLE_CLIENT_ID,
@@ -870,9 +908,8 @@ document.addEventListener("DOMContentLoaded", () => {
     login(savedCurrent);
   } else {
     renderAuthScreen();
+    tryInitGoogleSignIn();
   }
-
-  tryInitGoogleSignIn();
 
   document.getElementById("btn-goto-create").addEventListener("click", () => {
     document.getElementById("profile-block").classList.add("hidden");
@@ -986,6 +1023,24 @@ document.addEventListener("DOMContentLoaded", () => {
       renderAlbum();
       showToast("Dados apagados.");
     }
+  });
+
+  document.getElementById("btn-remove-profile").addEventListener("click", async () => {
+    if (!confirm("Remover este perfil do aparelho? Apaga daqui o perfil, o histórico, a sessão e o registro de notificações. O que já está na nuvem continua lá (use \"Apagar meus dados da nuvem\" antes, se quiser apagar também).")) return;
+    const email = currentEmail;
+    await unsyncPushSubscription();
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+    } catch {}
+    localStorage.removeItem("hidrata_push_device");
+    clearSession(email);
+    localStorage.removeItem("hidrata_data_" + email);
+    profiles = profiles.filter((p) => p.email !== email);
+    saveProfiles();
+    logout();
+    showToast("🗑️ Perfil removido deste aparelho.");
   });
 
   document.getElementById("btn-disable-push").addEventListener("click", async () => {

@@ -15,6 +15,11 @@ const VAPID_PUBLIC_KEY =
   "BGaHpocQhW4uet-gc5UtHdy_VW1n6w50y8_F0IesufoxraQph2kpGkzo82suXas4Mj9cPh9p7DOXIqu38iFW77o";
 const VAPID_SUBJECT = "https://onive4.github.io/hidrata-app/";
 
+// Registros de push de aparelhos que nao voltam ao app somem sozinhos (retencao minima de dados).
+const PUSH_RECORD_TTL_MS = 90 * 24 * 3600 * 1000;
+// So enviamos push para os servicos oficiais dos navegadores; qualquer outro destino e recusado.
+const PUSH_HOST_SUFFIXES = ["fcm.googleapis.com", "push.services.mozilla.com", "push.apple.com", "notify.windows.com"];
+
 const MAX_BODY_BYTES = 4096;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const MIN_INTERVAL = 15;
@@ -56,6 +61,7 @@ function pickMessage(pool) {
 // web-push envia via https.request do Node, que nao existe no Cloudflare Workers.
 // Usamos a lib so para criptografar/assinar (VAPID) e enviamos com fetch.
 async function sendPush(subscription, payload) {
+  if (!isAllowedPushEndpoint(subscription.endpoint)) throw new Error("endpoint de push nao permitido");
   const details = webpush.generateRequestDetails(subscription, payload);
   const headers = { ...details.headers };
   delete headers["Content-Length"];
@@ -68,14 +74,33 @@ async function sendPush(subscription, payload) {
   }
 }
 
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+};
+
+function isAllowedPushEndpoint(endpoint) {
+  let u;
+  try {
+    u = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:" || u.username || u.password || (u.port && u.port !== "443")) return false;
+  const host = u.hostname.toLowerCase();
+  return PUSH_HOST_SUFFIXES.some((s) => host === s || host.endsWith("." + s));
+}
+
 function corsHeaders(origin) {
-  const allow = ALLOWED_ORIGINS.has(origin) ? origin : "null";
-  return {
-    "Access-Control-Allow-Origin": allow,
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Vary": "Origin",
-  };
+  // origem nao permitida: nenhum cabecalho CORS (o navegador bloqueia a leitura da resposta)
+  const headers = { ...SECURITY_HEADERS, Vary: "Origin" };
+  if (ALLOWED_ORIGINS.has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
+    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+  }
+  return headers;
 }
 
 function json(data, status, origin) {
@@ -83,6 +108,14 @@ function json(data, status, origin) {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders(origin) },
   });
+}
+
+// grava o registro de push com validade absoluta (renovada a cada sincronizacao do aparelho)
+async function putSub(env, key, rec) {
+  if (!rec.expiresAt) rec.expiresAt = Date.now() + PUSH_RECORD_TTL_MS;
+  const exp = Math.floor(rec.expiresAt / 1000);
+  const opts = exp - Math.floor(Date.now() / 1000) > 120 ? { expiration: exp } : undefined;
+  await env.SUBS.put(key, JSON.stringify(rec), opts);
 }
 
 async function sha256Hex(text) {
@@ -102,10 +135,10 @@ function validateSubscriptionShape(body) {
   if (!ID_RE.test(body.deviceId || "")) return "deviceId invalido";
   if (typeof body.deviceSecret !== "string" || body.deviceSecret.length < 16 || body.deviceSecret.length > 128)
     return "deviceSecret invalido";
-  if (!body.subscription || typeof body.subscription.endpoint !== "string" || !body.subscription.endpoint.startsWith("https://"))
-    return "subscription invalida";
+  if (!body.subscription || typeof body.subscription.endpoint !== "string" || body.subscription.endpoint.length > 1024 || !isAllowedPushEndpoint(body.subscription.endpoint))
+    return "endpoint de push nao permitido";
   const keys = body.subscription.keys || {};
-  if (typeof keys.p256dh !== "string" || typeof keys.auth !== "string") return "subscription.keys invalido";
+  if (typeof keys.p256dh !== "string" || typeof keys.auth !== "string" || keys.p256dh.length > 200 || keys.auth.length > 100) return "subscription.keys invalido";
   if (!TIME_RE.test(body.wake || "")) return "wake invalido";
   if (!TIME_RE.test(body.sleep || "")) return "sleep invalido";
   const interval = Number(body.interval);
@@ -154,14 +187,9 @@ function localNow(tzOffsetMinutes) {
 }
 
 async function handleSubscribe(request, env, origin) {
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_BYTES) return json({ error: "payload grande demais" }, 413, origin);
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return json({ error: "json invalido" }, 400, origin);
-  }
+  const parsed = await readJsonBody(request, MAX_BODY_BYTES);
+  if (parsed.error) return json({ error: parsed.error }, parsed.status, origin);
+  const body = parsed.body;
   const err = validateSubscriptionShape(body);
   if (err) return json({ error: err }, 400, origin);
 
@@ -187,22 +215,18 @@ async function handleSubscribe(request, env, origin) {
     lastSlot: existing ? existing.lastSlot || null : null,
     lastSentAt: existing && existing.lastSentAt ? existing.lastSentAt : Date.now(),
     lastTestAt: existing ? existing.lastTestAt || 0 : 0,
+    expiresAt: Date.now() + PUSH_RECORD_TTL_MS,
     updatedAt: Date.now(),
   };
-  await env.SUBS.put(key, JSON.stringify(record));
+  await putSub(env, key, record);
   return json({ ok: true }, 200, origin);
 }
 
 async function handleTest(request, env, origin) {
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_BYTES) return json({ error: "payload grande demais" }, 413, origin);
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return json({ error: "json invalido" }, 400, origin);
-  }
-  if (!ID_RE.test(body.deviceId || "") || typeof body.deviceSecret !== "string") {
+  const parsed = await readJsonBody(request, MAX_BODY_BYTES);
+  if (parsed.error) return json({ error: parsed.error }, parsed.status, origin);
+  const body = parsed.body;
+  if (!body || typeof body !== "object" || !ID_RE.test(body.deviceId || "") || typeof body.deviceSecret !== "string") {
     return json({ error: "corpo invalido" }, 400, origin);
   }
   const key = `sub:${body.deviceId}`;
@@ -228,20 +252,15 @@ async function handleTest(request, env, origin) {
     return json({ error: "falha ao enviar push", status: e.statusCode || null, detail: String(e.message || e).slice(0, 200) }, 502, origin);
   }
   rec.lastTestAt = Date.now();
-  await env.SUBS.put(key, JSON.stringify(rec));
+  await putSub(env, key, rec);
   return json({ ok: true }, 200, origin);
 }
 
 async function handleUnsubscribe(request, env, origin) {
-  const raw = await request.text();
-  if (raw.length > MAX_BODY_BYTES) return json({ error: "payload grande demais" }, 413, origin);
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return json({ error: "json invalido" }, 400, origin);
-  }
-  if (!ID_RE.test(body.deviceId || "") || typeof body.deviceSecret !== "string") {
+  const parsed = await readJsonBody(request, MAX_BODY_BYTES);
+  if (parsed.error) return json({ error: parsed.error }, parsed.status, origin);
+  const body = parsed.body;
+  if (!body || typeof body !== "object" || !ID_RE.test(body.deviceId || "") || typeof body.deviceSecret !== "string") {
     return json({ error: "corpo invalido" }, 400, origin);
   }
   const key = `sub:${body.deviceId}`;
@@ -264,6 +283,8 @@ function toB64url(bytes) {
 }
 
 async function readJsonBody(request, maxBytes) {
+  // recusa antes de ler quando o tamanho declarado ja passa do limite
+  if (Number(request.headers.get("Content-Length")) > maxBytes) return { error: "payload grande demais", status: 413 };
   const raw = await request.text();
   if (raw.length > maxBytes) return { error: "payload grande demais", status: 413 };
   try {
@@ -292,7 +313,7 @@ async function handleAuthGoogle(request, env, origin) {
 
   let payload;
   try {
-    payload = await verifyGoogleIdToken(parsed.body.idToken, { clientId: GOOGLE_CLIENT_ID });
+    payload = await verifyGoogleIdToken(parsed.body && parsed.body.idToken, { clientId: GOOGLE_CLIENT_ID });
   } catch (e) {
     console.log(`auth recusada: ${e.message}`);
     return json({ error: "login do Google nao validado" }, 401, origin);
@@ -411,6 +432,11 @@ async function processSubscription(name, env) {
   const raw = await env.SUBS.get(name);
   if (!raw) return;
   const rec = JSON.parse(raw);
+  if (!isAllowedPushEndpoint(rec.endpoint)) {
+    await env.SUBS.delete(name); // destino fora dos servicos oficiais de push: nunca enviamos
+    console.log(`${name}: endpoint nao permitido, registro removido`);
+    return;
+  }
   const { dateKey, minutes } = localNow(rec.tzOffsetMinutes);
   const times = computeReminderTimes(rec.wake, rec.sleep, rec.interval);
 
@@ -420,7 +446,7 @@ async function processSubscription(name, env) {
     const past = times.filter((t) => hmToMinutes(t) <= minutes);
     rec.lastSlotDate = dateKey;
     rec.lastSlot = past.length ? past[past.length - 1] : null;
-    await env.SUBS.put(name, JSON.stringify(rec));
+    await putSub(env, name, rec);
     console.log(`${name}: baseline do dia definido (lastSlot=${rec.lastSlot}, agora=${minutes}min)`);
     return;
   }
@@ -454,7 +480,7 @@ async function processSubscription(name, env) {
     );
     if (due) rec.lastSlot = due;
     rec.lastSentAt = nowMs;
-    await env.SUBS.put(name, JSON.stringify(rec));
+    await putSub(env, name, rec);
     console.log(`${name}: notificacao enviada (${due ? "horario " + due : "rede de seguranca de " + safetyHours + "h"})`);
   } catch (e) {
     console.error(`${name}: falha ao enviar (status=${e.statusCode}, msg=${e.message})`);
