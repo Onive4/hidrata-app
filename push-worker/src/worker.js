@@ -1,6 +1,6 @@
 import webpush from "web-push";
 import { verifyGoogleIdToken } from "./auth.js";
-import { handleGroup, processGroups, removeUserFromGroup } from "./group.js";
+import { handleGroup, processGroups, removeUserFromGroup, spend } from "./group.js";
 
 const ALLOWED_ORIGINS = new Set([
   "https://onive4.github.io",
@@ -11,6 +11,9 @@ const GOOGLE_CLIENT_ID = "757207136611-ov9q5vcsj35cbrpii3uj4ckcdghhju6b.apps.goo
 const SESSION_TTL_SECONDS = 60 * 24 * 3600;
 const MAX_AUTH_BODY_BYTES = 8192;
 const MAX_SYNC_BODY_BYTES = 262144;
+const MAX_SYNC_WRITES_PER_DAY = 400;
+const MAX_NEW_DEVICES_PER_IP_HOUR = 30;
+const MAX_DEVICE_UPDATES_PER_DAY = 200;
 
 const VAPID_PUBLIC_KEY =
   "BGaHpocQhW4uet-gc5UtHdy_VW1n6w50y8_F0IesufoxraQph2kpGkzo82suXas4Mj9cPh9p7DOXIqu38iFW77o";
@@ -202,6 +205,19 @@ async function handleSubscribe(request, env, origin) {
   if (existing && !timingSafeEqual(existing.secretHash, secretHash)) {
     return json({ error: "nao autorizado" }, 403, origin);
   }
+  // Sem login, entao: aparelho novo conta no limite por endereco de rede; aparelho existente tem limite diario
+  // guardado no proprio registro (nenhuma gravacao extra para o uso normal).
+  const day = new Date().toISOString().slice(0, 10);
+  let usedToday = 0;
+  if (!existing) {
+    const ip = request.headers.get("CF-Connecting-IP");
+    if (ip && !(await spend(env, "rl:sub:" + (await sha256Hex(ip)).slice(0, 16), MAX_NEW_DEVICES_PER_IP_HOUR, 3600))) {
+      return json({ error: "muitas requisicoes; tente mais tarde" }, 429, origin);
+    }
+  } else {
+    usedToday = existing.wq && existing.wq.d === day ? existing.wq.n : 0;
+    if (usedToday >= MAX_DEVICE_UPDATES_PER_DAY) return json({ error: "muitas atualizacoes hoje" }, 429, origin);
+  }
 
   const record = {
     secretHash,
@@ -218,6 +234,7 @@ async function handleSubscribe(request, env, origin) {
     lastTestAt: existing ? existing.lastTestAt || 0 : 0,
     expiresAt: Date.now() + PUSH_RECORD_TTL_MS,
     updatedAt: Date.now(),
+    wq: { d: day, n: usedToday + 1 },
   };
   await putSub(env, key, record);
   return json({ ok: true }, 200, origin);
@@ -296,16 +313,22 @@ async function readJsonBody(request, maxBytes) {
 }
 
 // Sessao opaca: o servidor guarda so o hash do token, com validade.
-async function authenticate(request, env) {
+// `ph` e o hash da foto do login do Google (usado para conferir a foto mostrada nos grupos; a foto em si nao e guardada).
+async function authenticateSession(request, env) {
   const m = /^Bearer ([A-Za-z0-9_-]{32,64})$/.exec(request.headers.get("Authorization") || "");
   if (!m) return null;
   const raw = await env.SUBS.get("sess:" + (await sha256Hex(m[1])));
   if (!raw) return null;
   try {
-    return JSON.parse(raw).u || null;
+    const s = JSON.parse(raw);
+    return s.u ? { userKey: s.u, ph: typeof s.ph === "string" ? s.ph : "" } : null;
   } catch {
     return null;
   }
+}
+async function authenticate(request, env) {
+  const s = await authenticateSession(request, env);
+  return s ? s.userKey : null;
 }
 
 async function handleAuthGoogle(request, env, origin) {
@@ -322,8 +345,11 @@ async function handleAuthGoogle(request, env, origin) {
 
   // a chave do usuario e um hash do ID do Google: nem o e-mail nem o ID bruto ficam gravados
   const userKey = "user:" + (await sha256Hex("google:" + payload.sub));
+  // o mesmo token do Google pode ser reenviado à vontade: limita quantas sessões cada pessoa cria por hora
+  if (!(await spend(env, "rl:auth:" + userKey.slice(5, 37), 20, 3600))) return json({ error: "muitas tentativas de login; aguarde um pouco" }, 429, origin);
   const token = toB64url(crypto.getRandomValues(new Uint8Array(32)));
-  await env.SUBS.put("sess:" + (await sha256Hex(token)), JSON.stringify({ u: userKey, c: Date.now() }), {
+  const ph = typeof payload.picture === "string" && payload.picture ? await sha256Hex(payload.picture) : "";
+  await env.SUBS.put("sess:" + (await sha256Hex(token)), JSON.stringify({ u: userKey, c: Date.now(), ph }), {
     expirationTtl: SESSION_TTL_SECONDS,
   });
   return json({ token, expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000 }, 200, origin);
@@ -351,10 +377,15 @@ async function handleSyncPut(request, env, origin) {
   }
 
   const curRaw = await env.SUBS.get(userKey);
-  const currentVersion = curRaw ? JSON.parse(curRaw).version : 0;
+  const cur = curRaw ? JSON.parse(curRaw) : null;
+  const currentVersion = cur ? cur.version : 0;
   if (baseVersion !== currentVersion) return json({ error: "conflito de versao", version: currentVersion }, 409, origin);
+  // limite de gravacoes por dia (o contador mora no proprio registro: nao gasta gravacao extra)
+  const day = new Date().toISOString().slice(0, 10);
+  const used = cur && cur.wd && cur.wd.d === day ? cur.wd.n : 0;
+  if (used >= MAX_SYNC_WRITES_PER_DAY) return json({ error: "muitas sincronizacoes hoje" }, 429, origin);
 
-  const rec = { version: currentVersion + 1, updatedAt: Date.now(), blob };
+  const rec = { version: currentVersion + 1, updatedAt: Date.now(), blob, wd: { d: day, n: used + 1 } };
   await env.SUBS.put(userKey, JSON.stringify(rec));
   return json({ version: rec.version, updatedAt: rec.updatedAt }, 200, origin);
 }
@@ -372,7 +403,7 @@ function ensureVapid(env) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY);
 }
 
-const GROUP_DEPS = { json, readJsonBody, authenticate, sha256Hex, timingSafeEqual, sendPush, ensureVapid };
+const GROUP_DEPS = { json, readJsonBody, authenticate, authenticateSession, sha256Hex, timingSafeEqual, sendPush, ensureVapid };
 
 export default {
   async fetch(request, env) {

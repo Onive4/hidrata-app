@@ -1,4 +1,4 @@
-const CACHE = "hidrata-v21";
+const CACHE = "hidrata-v22";
 const ASSETS = ["./", "./index.html", "./styles.css", "./lock.js", "./app.js", "./sync.js", "./privacy.js", "./fx.js", "./group.js", "./google-config.js", "./push-config.js", "./manifest.json", "./icon.svg", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (event) => {

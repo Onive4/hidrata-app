@@ -10,6 +10,8 @@ const GROUP_DEVICE_LINK_MS = 24 * 3600 * 1000;
 const GROUP_PHOTO_RE = /^https:\/\/lh[3-6]\.googleusercontent\.com\/[A-Za-z0-9_\-\/=.]{1,300}$/;
 const GROUP_TEXT_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._'’-]*$/u;
 const GROUP_GIFT_ID_RE = /^[A-Za-z0-9_-]{16,24}$/;
+const GROUP_ID_RE = /^[A-Za-z0-9_-]{16,32}$/;
+const ownKey = (obj, k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(obj, k);
 const GROUP_DAY_LETTERS = ["S", "T", "Q", "Q", "S", "S", "D"];
 const GROUP_TROPHIES = {
   bronze: { name: "Bronze", color: "#cd7f32", next: "Prata com 4 semanas seguidas" },
@@ -270,6 +272,11 @@ async function pushGroupSnapshot(force, gid) {
   }
   if (!r.ok) throw new Error("PUT " + r.status);
   groupLastSnap[id] = { hash, at: Date.now() };
+  if (r.data && r.data.nickTaken && typeof r.data.nick === "string" && id) {
+    gpFor(id).nick = cleanGroupText(r.data.nick, 20) || gpFor(id).nick;
+    saveProfiles();
+    showToast("Esse apelido já é de outra pessoa neste grupo. Escolha outro.");
+  }
   return true;
 }
 
@@ -338,7 +345,7 @@ async function receiveInbox(inbox) {
       d.giftIn.push(key);
       if (!d.emblems.includes(it.e)) d.emblems.push(it.e);
       gifts.push({ from, emblem });
-    } else if (GROUP_INCOMING_TEXT[it.k] && !seen.has(it.id)) {
+    } else if (ownKey(GROUP_INCOMING_TEXT, it.k) && !seen.has(it.id)) {
       const gn = knownGids().length > 1 ? cleanGroupText(it.gn, 30) : null; // com vários grupos, diz de qual veio
       reacts.push({ k: it.k, text: GROUP_INCOMING_TEXT[it.k](from) + (gn ? " · " + gn : "") });
     }
@@ -438,7 +445,7 @@ function computeFeed(state) {
     }
     for (const mid of Object.keys(before.members)) if (!now.members[mid]) items.push(`👋 ${before.members[mid].nick} saiu do grupo`);
     const rank = { "": 0, bronze: 1, prata: 2, ouro: 3 };
-    if ((rank[now.jar] || 0) > (rank[before.jar] || 0)) items.push(`🏆 A Jarra do grupo evoluiu para ${GROUP_TROPHIES[now.jar].name}`);
+    if ((rank[now.jar] || 0) > (rank[before.jar] || 0)) items.push(`🏆 A Jarra do grupo evoluiu para ${(ownKey(GROUP_TROPHIES, now.jar) ? GROUP_TROPHIES[now.jar].name : "")}`);
   }
   prefs.seen = now;
   saveProfiles();
@@ -464,11 +471,11 @@ async function refreshGroup() {
       r = await groupApi("GET", "/group");
       if (currentEmail !== email) return;
       if (!r.ok || !r.data) throw new Error("GET " + r.status);
-      const groups = Array.isArray(r.data.groups) ? r.data.groups.filter((g) => g && typeof g.id === "string") : [];
+      const groups = Array.isArray(r.data.groups) ? r.data.groups.filter((g) => g && typeof g.id === "string" && GROUP_ID_RE.test(g.id)) : [];
       const before = knownGids();
       prefs.gids = groups.map((g) => g.id);
       delete prefs.inGroup;
-      if (r.data.group) {
+      if (r.data.group && GROUP_ID_RE.test(String(r.data.group.id))) {
         const id = r.data.group.id;
         prefs.active = id;
         migrateLegacyPrefs(id);
@@ -606,6 +613,10 @@ function declineGroupConsent() {
 // ---------- ações ----------
 function friendlyGroupError(action, r) {
   const s = r && r.status;
+  const detail = String((r && r.data && r.data.error) || "");
+  if (action === "join" && s === 403) return "Você foi removido desse grupo e não pode entrar de novo com este convite.";
+  if (s === 409 && /apelido/.test(detail)) return "Esse apelido já é de outra pessoa neste grupo. Escolha outro.";
+  if (s === 429 && /hoje/.test(detail)) return "Você chegou ao limite de hoje para essa ação. Tente amanhã.";
   const table = {
     create: { 409: "Você já está em 3 grupos, o limite. Saia de um para criar outro.", 400: "Confira o nome do grupo e o seu apelido (letras, números e espaços)." },
     join: { 404: "Não encontrei esse convite. Confira o código.", 409: "Não deu para entrar: o grupo está cheio, você já está nele ou já está em 3 grupos.", 429: "Muitas tentativas. Tente de novo daqui a pouco.", 400: "Confira o código e o seu apelido." },
@@ -1187,7 +1198,7 @@ function renderJarSection(g, week, todayIdx, drops) {
   else if (left === 0) msg = h("p", null, h("b", null, "Jarra cheia!"), " Mantendo até domingo, o grupo ganha mais uma semana na sequência.");
   else msg = h("p", null, "Faltam ", h("b", null, `${left} ${plural(left, "gota", "gotas")}`), daysLeft === 1 ? ". Último dia, hoje conta!" : ` em ${daysLeft} ${plural(daysLeft, "dia", "dias")}. `, daysLeft === 1 ? null : h("b", null, "Hoje conta."));
 
-  const trophy = g.jarLevel ? GROUP_TROPHIES[g.jarLevel] : null;
+  const trophy = ownKey(GROUP_TROPHIES, g.jarLevel) ? GROUP_TROPHIES[g.jarLevel] : null;
   const trophyBox = h("div", "g-trophy" + (trophy ? " on" : ""));
   if (trophy) trophyBox.style.setProperty("--g-trophy", trophy.color);
   trophyBox.appendChild(jarBadgeSvg(trophy ? trophy.color : "#5b6b86"));

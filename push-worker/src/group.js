@@ -24,8 +24,18 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TEXT_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._'’-]*$/u;
 const PHOTO_RE = /^https:\/\/lh[3-6]\.googleusercontent\.com\/[A-Za-z0-9_\-\/=.]{1,300}$/;
 const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-const CODE_LEN = 6;
-const CODE_RE = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/;
+// convites novos têm 8 caracteres (1 trilhão de combinações); os antigos, de 6, continuam valendo
+const CODE_LEN = 8;
+const CODE_RE = /^(?:[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}|[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8})$/;
+const MAX_BANNED = 50;
+const DAILY_WRITES_PER_MEMBER = 120;
+const DAILY_CREATOR_OPS = 60;
+const DAILY_SOCIAL = 40;
+const DAILY_GIFTS = 10;
+const DAILY_CREATES = 5;
+const DAILY_JOINS = 15;
+const JOIN_FAILS_PER_HOUR = 10;
+const JOIN_FAILS_PER_IP_HOUR = 30;
 const GID_RE = /^[A-Za-z0-9_-]{16,32}$/;
 const MID_RE = /^[0-9a-f]{20}$/;
 const GIFT_ID_RE = /^[A-Za-z0-9_-]{16,24}$/;
@@ -42,6 +52,8 @@ const EMBLEM_LABELS = {
   coral: "Coral", sereia: "Sereia", tridente: "Tridente de Poseidon", baleia: "Baleia Mística", dragao: "Dragão das Águas",
   reidosmares: "Rei dos Mares", kraken: "Kraken", cisne: "Cisne Encantado", presagio: "Presságio das Marés",
 };
+
+const isEmblem = (id) => typeof id === "string" && Object.prototype.hasOwnProperty.call(EMBLEM_LABELS, id);
 
 // Reações: cada uma tem uma regra do que precisa ser verdade para poder mandar (null = ainda não dá).
 const REACTIONS = {
@@ -133,7 +145,7 @@ function randomCode() {
 }
 function normalizeCode(input) {
   const s = String(input || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return s.startsWith("AGUA") && s.length === 4 + CODE_LEN ? s.slice(4) : s;
+  return s.startsWith("AGUA") && (s.length === 10 || s.length === 12) ? s.slice(4) : s;
 }
 
 // ---------- validação ----------
@@ -152,7 +164,7 @@ function cleanDays(v) {
 }
 
 // O que o membro compartilha. Tudo passa por aqui: só formatos esperados são gravados.
-function parseMe(me, now) {
+function parseMe(me, now, opts) {
   if (!me || typeof me !== "object") return { error: "dados invalidos" };
   const nick = cleanText(me.nick, 20);
   if (!nick) return { error: "apelido invalido (use letras, numeros e espacos, ate 20)" };
@@ -161,9 +173,10 @@ function parseMe(me, now) {
   const rec = { nick, tz, visible: me.visible !== false, pushOk: me.pushOk !== false, photo: null };
   if (!rec.visible) return { rec };
 
+  // a foto só vale se for a mesma do login do Google desta sessão (senão vira "sem foto", sem erro)
   if (me.photo != null) {
     if (typeof me.photo !== "string" || !PHOTO_RE.test(me.photo)) return { error: "foto invalida" };
-    rec.photo = me.photo;
+    rec.photo = opts && opts.photoOk ? me.photo : null;
   }
   const level = clampInt(me.level, 1, 50);
   const streak = clampInt(me.streak, 0, 5000);
@@ -176,12 +189,12 @@ function parseMe(me, now) {
   if (!days || !prevDays) return { error: "dias invalidos" };
   if (typeof me.todayKey !== "string" || !isRealDate(me.todayKey) || Math.abs(dateToUtc(me.todayKey) - dateToUtc(today)) > 2 * 86400000) return { error: "dia invalido" };
   if (!Array.isArray(me.emblems) || me.emblems.length > 60) return { error: "emblemas invalidos" };
-  const emblems = [...new Set(me.emblems.filter((e) => typeof e === "string" && EMBLEM_LABELS[e]))].sort();
+  const emblems = [...new Set(me.emblems.filter(isEmblem))].sort();
   const dups = {};
   if (me.dups && typeof me.dups === "object" && !Array.isArray(me.dups)) {
     for (const k of Object.keys(me.dups)) {
       const n = clampInt(me.dups[k], 1, 99);
-      if (EMBLEM_LABELS[k] && n !== null && emblems.includes(k)) dups[k] = n;
+      if (isEmblem(k) && n !== null && emblems.includes(k)) dups[k] = n;
     }
   }
   Object.assign(rec, {
@@ -192,8 +205,49 @@ function parseMe(me, now) {
 }
 
 function sameShared(a, b) {
-  const strip = (r) => JSON.stringify({ ...r, updatedAt: 0, joinedAt: 0, mid: 0 });
+  const strip = (r) => JSON.stringify({ ...r, updatedAt: 0, joinedAt: 0, mid: 0, wq: 0 });
   return strip(a) === strip(b);
+}
+
+// apelido "igual" ignorando maiúsculas, acentos, espaços e pontuação (evita se passar por outra pessoa)
+function nickKey(n) {
+  return String(n).normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+// Orçamento de uso: lê antes de gravar, então quem já passou do limite não gasta gravação nenhuma.
+export async function spend(env, key, limit, ttlSeconds) {
+  const n = Number((await env.SUBS.get(key)) || 0);
+  if (n >= limit) return false;
+  await env.SUBS.put(key, String(n + 1), { expirationTtl: Math.max(60, ttlSeconds) });
+  return true;
+}
+
+// Trava curta por chave: pedidos simultâneos da mesma pessoa/grupo passam um de cada vez.
+// (O KV não tem transação; sem isso, 10 pedidos em paralelo furam qualquer limite.)
+async function withLock(env, key, fn) {
+  const token = randomToken(8);
+  if (await env.SUBS.get(key)) return { busy: true };
+  await env.SUBS.put(key, token, { expirationTtl: 60 });
+  if ((await env.SUBS.get(key)) !== token) return { busy: true };
+  try {
+    return { value: await fn() };
+  } finally {
+    await env.SUBS.delete(key);
+  }
+}
+// espera a vez (várias pessoas entrando no mesmo grupo ao mesmo tempo); devolve { busy: true } se demorar demais
+async function withLockWait(env, key, fn, tries) {
+  for (let i = 0; i < tries; i++) {
+    const r = await withLock(env, key, fn);
+    if (!r.busy) return r;
+    await new Promise((res) => setTimeout(res, 120 + Math.random() * 120));
+  }
+  return { busy: true };
+}
+// para apagar dados a trava não pode impedir: espera um pouco e, se ainda estiver ocupada, segue sem ela
+async function withLockAlways(env, key, fn) {
+  const r = await withLockWait(env, key, fn, 5);
+  return r.busy ? fn() : r.value;
 }
 
 // ---------- Jarra ----------
@@ -331,21 +385,23 @@ async function removeUserFromGroup(env, uh, only) {
   const gids = await userGroups(env, uh);
   const leaving = only ? gids.filter((g) => g === only) : gids;
   for (const gid of leaving) {
-    await env.SUBS.delete(`gm:${gid}:${uh}`);
-    const grp = await getJson(env, `grp:${gid}`);
-    if (!grp) continue;
-    grp.members = (await membersOf(env, grp)).filter((x) => x !== uh);
-    const rest = await loadMembers(env, grp);
-    if (!rest.length) {
-      await env.SUBS.delete(`grp:${gid}`);
-      await env.SUBS.delete(`inv:${grp.code}`);
-      continue;
-    }
-    if (grp.creator === uh) {
-      rest.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
-      grp.creator = rest[0].uh;
-    }
-    await putJson(env, `grp:${gid}`, grp);
+    await withLockAlways(env, `lk:g:${gid}`, async () => {
+      await env.SUBS.delete(`gm:${gid}:${uh}`);
+      const grp = await getJson(env, `grp:${gid}`);
+      if (!grp) return;
+      grp.members = (await membersOf(env, grp)).filter((x) => x !== uh);
+      const rest = await loadMembers(env, grp);
+      if (!rest.length) {
+        await env.SUBS.delete(`grp:${gid}`);
+        await env.SUBS.delete(`inv:${grp.code}`);
+        return;
+      }
+      if (grp.creator === uh) {
+        rest.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
+        grp.creator = rest[0].uh;
+      }
+      await putJson(env, `grp:${gid}`, grp);
+    });
   }
   const remaining = gids.filter((g) => !leaving.includes(g));
   await saveUserGroups(env, uh, remaining);
@@ -400,7 +456,7 @@ async function buildState(env, deps, uh, mine, now) {
   const week = currentWeekOf(grp, now);
   const j = jarNumbers(grp, members, week);
   const inbox = (await readInbox(env, uh))
-    .filter((x) => x && GIFT_ID_RE.test(x.id || "") && INBOX_KINDS.includes(x.k) && (x.k !== "gift" || EMBLEM_LABELS[x.e]))
+    .filter((x) => x && GIFT_ID_RE.test(x.id || "") && INBOX_KINDS.includes(x.k) && (x.k !== "gift" || isEmblem(x.e)))
     .map((x) => ({ id: x.id, k: x.k, from: x.from, e: x.e, at: x.at, gn: typeof x.gn === "string" ? x.gn : undefined }));
   members.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
   return {
@@ -424,11 +480,19 @@ export async function handleGroup(request, env, origin, url, deps) {
   if (path !== "/group" && !path.startsWith("/group/")) return null;
   const { json, readJsonBody, authenticate } = deps;
 
-  const userKey = await authenticate(request, env);
-  if (!userKey) return json({ error: "sessao invalida" }, 401, origin);
+  const session = deps.authenticateSession ? await deps.authenticateSession(request, env) : null;
+  if (!session || !session.userKey) return json({ error: "sessao invalida" }, 401, origin);
+  const userKey = session.userKey;
   const uh = userKey.startsWith("user:") ? userKey.slice(5) : userKey;
   const now = Date.now();
+  const today = utcToKey(now);
   const method = request.method;
+  // a foto do grupo só é aceita se for exatamente a do login do Google desta sessão
+  async function photoAllowed(m) {
+    const ph = m && m.photo;
+    if (ph === null || ph === undefined) return true;
+    return !!(session.ph && typeof ph === "string" && (await deps.sha256Hex(ph)) === session.ph);
+  }
   const wantedG = url.searchParams.get("g") || "";
 
   async function body() {
@@ -450,65 +514,84 @@ export async function handleGroup(request, env, origin, url, deps) {
   if (path === "/group" && method === "POST") {
     const { b, res } = await body();
     if (res) return res;
-    const myGids = await userGroups(env, uh);
-    if (myGids.length >= MAX_GROUPS_PER_USER) return bad("limite de grupos por pessoa atingido", 409);
     const name = cleanText(b.name, 30);
     if (!name) return bad("nome do grupo invalido (use letras, numeros e espacos, ate 30)");
-    const me = parseMe(b.me, now);
+    const me = parseMe(b.me, now, { photoOk: await photoAllowed(b.me) });
     if (me.error) return bad(me.error);
-
-    let code = null;
-    for (let i = 0; i < 6 && !code; i++) {
-      const c = randomCode();
-      if (!(await env.SUBS.get(`inv:${c}`))) code = c;
-    }
-    if (!code) return bad("nao foi possivel gerar o convite agora", 503);
-    const gid = randomToken(12);
-    const grp = {
-      id: gid, name, code, creator: uh, tz: me.rec.tz, pct: DEFAULT_PCT, pending: null, createdAt: now,
-      jarStreak: 0, jarBest: 0, jarWeeks: 0, closedWeek: null, lastResult: null, summaryWeek: null, members: [uh],
-    };
-    const rec = { ...me.rec, mid: await memberId(gid, uh, deps), joinedAt: now, updatedAt: now };
-    await putJson(env, `grp:${gid}`, grp);
-    await putJson(env, `gm:${gid}:${uh}`, rec, MEMBER_TTL_SECONDS);
-    await env.SUBS.put(`inv:${code}`, gid);
-    await saveUserGroups(env, uh, [...myGids, gid]);
-    return json(await buildState(env, deps, uh, { grp, me: rec, gids: [...myGids, gid] }, now), 200, origin);
+    const out = await withLock(env, `lk:u:${uh}`, async () => {
+      const myGids = await userGroups(env, uh);
+      if (myGids.length >= MAX_GROUPS_PER_USER) return bad("limite de grupos por pessoa atingido", 409);
+      if (!(await spend(env, `rl:mk:${uh}`, DAILY_CREATES, 24 * 3600))) return bad("muitos grupos criados hoje", 429);
+      let code = null;
+      for (let i = 0; i < 6 && !code; i++) {
+        const c = randomCode();
+        if (!(await env.SUBS.get(`inv:${c}`))) code = c;
+      }
+      if (!code) return bad("nao foi possivel gerar o convite agora", 503);
+      const gid = randomToken(12);
+      const grp = {
+        id: gid, name, code, creator: uh, tz: me.rec.tz, pct: DEFAULT_PCT, pending: null, createdAt: now,
+        jarStreak: 0, jarBest: 0, jarWeeks: 0, closedWeek: null, lastResult: null, summaryWeek: null, members: [uh], banned: [],
+      };
+      const rec = { ...me.rec, mid: await memberId(gid, uh, deps), joinedAt: now, updatedAt: now };
+      await putJson(env, `grp:${gid}`, grp);
+      await putJson(env, `gm:${gid}:${uh}`, rec, MEMBER_TTL_SECONDS);
+      await env.SUBS.put(`inv:${code}`, gid);
+      await saveUserGroups(env, uh, [...myGids, gid]);
+      return json(await buildState(env, deps, uh, { grp, me: rec, gids: [...myGids, gid] }, now), 200, origin);
+    });
+    return out.busy ? bad("tente de novo em instantes", 429) : out.value;
   }
 
   // --- entrar por convite ---
   if (path === "/group/join" && method === "POST") {
     const { b, res } = await body();
     if (res) return res;
-    const myGids = await userGroups(env, uh);
-    if (myGids.length >= MAX_GROUPS_PER_USER) return bad("limite de grupos por pessoa atingido", 409);
-    const failKey = `rl:jf:${uh}`;
-    const fails = Number((await env.SUBS.get(failKey)) || 0);
-    if (fails >= 10) return bad("muitas tentativas; tente de novo daqui a pouco", 429);
-    const code = normalizeCode(b.code);
-    const gid = CODE_RE.test(code) ? await env.SUBS.get(`inv:${code}`) : null;
-    const grp = gid ? await getJson(env, `grp:${gid}`) : null;
-    if (!grp) {
-      await env.SUBS.put(failKey, String(fails + 1), { expirationTtl: 3600 });
-      return bad("codigo de convite nao encontrado", 404);
-    }
-    if (myGids.includes(gid)) return bad("voce ja esta nesse grupo", 409);
-    const me = parseMe(b.me, now);
-    if (me.error) return bad(me.error);
-    const members = await loadMembers(env, grp);
-    if (members.length >= MAX_MEMBERS) return bad("este grupo esta cheio", 409);
-    const rec = { ...me.rec, mid: await memberId(gid, uh, deps), joinedAt: now, updatedAt: now };
-    await putJson(env, `gm:${gid}:${uh}`, rec, MEMBER_TTL_SECONDS);
-    await saveUserGroups(env, uh, [...myGids, gid]);
-    const fresh = (await getJson(env, `grp:${gid}`)) || grp;
-    if (!(await membersOf(env, fresh)).includes(uh)) {
-      fresh.members = [...fresh.members, uh];
-      await putJson(env, `grp:${gid}`, fresh);
-    }
-    grp.members = fresh.members;
-    return json(await buildState(env, deps, uh, { grp, me: rec, gids: [...myGids, gid] }, now), 200, origin);
-  }
+    const ip = request.headers && typeof request.headers.get === "function" ? request.headers.get("CF-Connecting-IP") : null;
+    const out = await withLock(env, `lk:u:${uh}`, async () => {
+      const myGids = await userGroups(env, uh);
+      if (myGids.length >= MAX_GROUPS_PER_USER) return bad("limite de grupos por pessoa atingido", 409);
+      // tentativas erradas: por pessoa e por endereço (a trava acima impede furar o limite em paralelo)
+      const failKey = `rl:jf:${uh}`;
+      const fails = Number((await env.SUBS.get(failKey)) || 0);
+      if (fails >= JOIN_FAILS_PER_HOUR) return bad("muitas tentativas; tente de novo daqui a pouco", 429);
+      const ipKey = ip ? `rl:jfi:${(await deps.sha256Hex(ip)).slice(0, 16)}` : null;
+      const ipFails = ipKey ? Number((await env.SUBS.get(ipKey)) || 0) : 0;
+      if (ipFails >= JOIN_FAILS_PER_IP_HOUR) return bad("muitas tentativas; tente de novo daqui a pouco", 429);
 
+      const code = normalizeCode(b.code);
+      const gid = CODE_RE.test(code) ? await env.SUBS.get(`inv:${code}`) : null;
+      const grp = gid ? await getJson(env, `grp:${gid}`) : null;
+      if (!grp) {
+        await env.SUBS.put(failKey, String(fails + 1), { expirationTtl: 3600 });
+        if (ipKey) await env.SUBS.put(ipKey, String(ipFails + 1), { expirationTtl: 3600 });
+        return bad("codigo de convite nao encontrado", 404);
+      }
+      if (myGids.includes(gid)) return bad("voce ja esta nesse grupo", 409);
+      if (Array.isArray(grp.banned) && grp.banned.includes(uh)) return bad("voce nao pode entrar neste grupo", 403);
+      const me = parseMe(b.me, now, { photoOk: await photoAllowed(b.me) });
+      if (me.error) return bad(me.error);
+      if (!(await spend(env, `rl:jn:${uh}`, DAILY_JOINS, 24 * 3600))) return bad("muitas entradas em grupos hoje", 429);
+
+      const inGroup = await withLockWait(env, `lk:g:${gid}`, async () => {
+        // dentro da trava o grupo é lido de novo: quem entrou um instante antes já conta
+        const current = (await getJson(env, `grp:${gid}`)) || grp;
+        const members = await loadMembers(env, current);
+        if (members.length >= MAX_MEMBERS) return bad("este grupo esta cheio", 409);
+        if (members.some((m) => nickKey(m.rec.nick) === nickKey(me.rec.nick))) return bad("apelido em uso neste grupo", 409);
+        const rec = { ...me.rec, mid: await memberId(gid, uh, deps), joinedAt: now, updatedAt: now };
+        await putJson(env, `gm:${gid}:${uh}`, rec, MEMBER_TTL_SECONDS);
+        await saveUserGroups(env, uh, [...myGids, gid]);
+        if (!(await membersOf(env, current)).includes(uh)) {
+          current.members = [...current.members, uh];
+          await putJson(env, `grp:${gid}`, current);
+        }
+        return json(await buildState(env, deps, uh, { grp: current, me: rec, gids: [...myGids, gid] }, now), 200, origin);
+      }, 8);
+      return inGroup.busy ? bad("tente de novo em instantes", 429) : inGroup.value;
+    });
+    return out.busy ? bad("tente de novo em instantes", 429) : out.value;
+  }
   // --- vínculo de aparelho para push (não exige estar em grupo) ---
   if (path === "/group/devices" && method === "POST") {
     const { b, res } = await body();
@@ -520,11 +603,13 @@ export async function handleGroup(request, env, origin, url, deps) {
     const previousOwner = await env.SUBS.get(`dv:${b.deviceId}`);
     if (previousOwner && previousOwner !== uh) {
       const other = await getJson(env, `ud:${previousOwner}`);
-      if (other && Array.isArray(other.ids)) await putJson(env, `ud:${previousOwner}`, { ids: other.ids.filter((x) => x !== b.deviceId) }, DEVICE_LINK_TTL_SECONDS);
+      if (other && Array.isArray(other.ids)) await putJson(env, `ud:${previousOwner}`, { ids: other.ids.filter((x) => x !== b.deviceId), wq: other.wq }, DEVICE_LINK_TTL_SECONDS);
     }
     const ud = await getJson(env, `ud:${uh}`);
+    const linksToday = ud && ud.wq && ud.wq.d === today ? ud.wq.n : 0;
+    if (linksToday >= 20) return bad("muitas atualizacoes hoje", 429);
     const ids = [...(ud && Array.isArray(ud.ids) ? ud.ids.filter((x) => x !== b.deviceId) : []), b.deviceId].slice(-MAX_DEVICES_PER_USER);
-    await putJson(env, `ud:${uh}`, { ids }, DEVICE_LINK_TTL_SECONDS);
+    await putJson(env, `ud:${uh}`, { ids, wq: { d: today, n: linksToday + 1 } }, DEVICE_LINK_TTL_SECONDS);
     await env.SUBS.put(`dv:${b.deviceId}`, uh, { expirationTtl: DEVICE_LINK_TTL_SECONDS });
     return json({ ok: true }, 200, origin);
   }
@@ -549,30 +634,50 @@ export async function handleGroup(request, env, origin, url, deps) {
   if (path === "/group/me" && method === "PUT") {
     const { b, res } = await body();
     if (res) return res;
-    const me = parseMe(b, now);
+    const me = parseMe(b, now, { photoOk: await photoAllowed(b) });
     if (me.error) return bad(me.error);
     const prev = mine.me;
-    const next = { ...me.rec, mid: prev.mid, joinedAt: prev.joinedAt, updatedAt: now };
+    // apelido já usado por outra pessoa do grupo: mantém o anterior e avisa (sem dar erro)
+    let nickTaken = false;
+    if (nickKey(me.rec.nick) !== nickKey(prev.nick)) {
+      const others = (await loadMembers(env, grp, uh, mine.me)).filter((m) => m.uh !== uh);
+      if (others.some((m) => nickKey(m.rec.nick) === nickKey(me.rec.nick))) {
+        me.rec.nick = prev.nick;
+        nickTaken = true;
+      }
+    }
+    const next = { ...me.rec, mid: prev.mid, joinedAt: prev.joinedAt, updatedAt: now, wq: prev.wq };
     // sem mudança e recente: não gasta escrita (o KV tem limite diário de gravações)
     if (!sameShared(prev, next) || now - (prev.updatedAt || 0) > SNAPSHOT_REFRESH_MS) {
+      const used = prev.wq && prev.wq.d === today ? prev.wq.n : 0;
+      if (used >= DAILY_WRITES_PER_MEMBER) return bad("muitas atualizacoes hoje; tente amanha", 429);
+      next.wq = { d: today, n: used + 1 };
       await putJson(env, `gm:${grp.id}:${uh}`, next, MEMBER_TTL_SECONDS);
     }
     if (grp.creator === uh && grp.tz !== next.tz) {
       grp.tz = next.tz;
       await putJson(env, `grp:${grp.id}`, grp);
     }
-    return json({ ok: true }, 200, origin);
+    return json({ ok: true, nick: next.nick, nickTaken }, 200, origin);
   }
-
   // --- sair ---
   if (path === "/group/leave" && method === "POST") {
     await removeUserFromGroup(env, uh, grp.id);
     return json({ ok: true }, 200, origin);
   }
 
+  // Ações do criador (meta, convite, remover) têm um limite por dia guardado no próprio grupo.
+  const creatorOp = () => {
+    const ops = grp.ops && grp.ops.d === today ? grp.ops.n : 0;
+    if (ops >= DAILY_CREATOR_OPS) return false;
+    grp.ops = { d: today, n: ops + 1 };
+    return true;
+  };
+
   // --- ajustes do grupo (só o criador) ---
   if (path === "/group/settings" && method === "PUT") {
     if (grp.creator !== uh) return bad("so quem criou o grupo pode mudar isso", 403);
+    if (!creatorOp()) return bad("muitas alteracoes hoje", 429);
     const { b, res } = await body();
     if (res) return res;
     if (b.name !== undefined) {
@@ -599,6 +704,7 @@ export async function handleGroup(request, env, origin, url, deps) {
   // --- novo código de convite (só o criador) ---
   if (path === "/group/invite" && method === "POST") {
     if (grp.creator !== uh) return bad("so quem criou o grupo pode mudar isso", 403);
+    if (!creatorOp()) return bad("muitas alteracoes hoje", 429);
     let code = null;
     for (let i = 0; i < 6 && !code; i++) {
       const c = randomCode();
@@ -620,6 +726,10 @@ export async function handleGroup(request, env, origin, url, deps) {
     if (!MID_RE.test(b.mid || "")) return bad("membro invalido");
     const target = (await loadMembers(env, grp, uh, mine.me)).find((m) => m.rec.mid === b.mid);
     if (!target || target.uh === uh) return bad("membro nao encontrado", 404);
+    if (!creatorOp()) return bad("muitas alteracoes hoje", 429);
+    // quem é removido não volta com o mesmo convite
+    grp.banned = [...new Set([...(Array.isArray(grp.banned) ? grp.banned : []), target.uh])].slice(-MAX_BANNED);
+    await putJson(env, `grp:${grp.id}`, grp);
     await removeUserFromGroup(env, target.uh, grp.id);
     return json({ ok: true }, 200, origin);
   }
@@ -634,12 +744,15 @@ export async function handleGroup(request, env, origin, url, deps) {
     if (!target || target.uh === uh) return bad("membro nao encontrado", 404);
     const from = mine.me.nick;
     if (!mine.me.visible || !target.rec.visible) return bad("essa pessoa esta oculta", 409);
+    // limite diário de interações por pessoa (cutucar, reagir e presentear somam)
+    const socialLeft = async () => spend(env, `rl:soc:${uh}:${today}`, DAILY_SOCIAL, 30 * 3600);
 
     if (path === "/group/poke") {
       const stale = now - (target.rec.updatedAt || 0) > 20 * 3600000;
       if (target.rec.todayCounted && !stale) return bad("essa pessoa ja contou o dia de hoje", 409);
       const pairKey = `rl:poke:${uh}:${target.uh}`;
       if (await env.SUBS.get(pairKey)) return bad("voce ja cutucou essa pessoa hoje", 429);
+      if (!(await socialLeft())) return bad("limite de interacoes de hoje atingido", 429);
       await env.SUBS.put(pairKey, "1", { expirationTtl: 20 * 3600 });
       await addToInbox(env, target.uh, { id: randomToken(12), k: "poke", from, at: now, gn: grp.name });
       if (target.rec.pushOk) await pushToUser(env, deps, target.uh, POKE_MESSAGES[Math.floor(Math.random() * POKE_MESSAGES.length)](from) + (await groupSuffix(env, target.uh, grp)));
@@ -656,6 +769,7 @@ export async function handleGroup(request, env, origin, url, deps) {
       const pairKey = `rl:cheer:${uh}:${target.uh}`;
       const used = ((await env.SUBS.get(pairKey)) || "").split(",").filter(Boolean);
       if (used.includes(kind)) return bad("voce ja mandou essa reacao hoje", 429);
+      if (!(await socialLeft())) return bad("limite de interacoes de hoje atingido", 429);
       await env.SUBS.put(pairKey, [...used, kind].join(","), { expirationTtl: 20 * 3600 });
       await addToInbox(env, target.uh, { id: randomToken(12), k: kind, from, at: now, gn: grp.name });
       if (target.rec.pushOk) await pushToUser(env, deps, target.uh, text + (await groupSuffix(env, target.uh, grp)));
@@ -664,10 +778,11 @@ export async function handleGroup(request, env, origin, url, deps) {
 
     // presente: precisa de um repetido que a outra pessoa ainda não tem
     const emblem = typeof b.emblem === "string" ? b.emblem : "";
-    if (!EMBLEM_LABELS[emblem]) return bad("emblema invalido");
+    if (!isEmblem(emblem)) return bad("emblema invalido");
     if (!(mine.me.dups && mine.me.dups[emblem] >= 1)) return bad("voce nao tem esse emblema repetido", 409);
     if ((target.rec.emblems || []).includes(emblem)) return bad("essa pessoa ja tem esse emblema", 409);
     if ((await readInbox(env, target.uh)).some((x) => x.k === "gift" && x.e === emblem)) return bad("esse presente ja esta a caminho", 409);
+    if (!(await spend(env, `rl:gift:${uh}:${today}`, DAILY_GIFTS, 30 * 3600)) || !(await socialLeft())) return bad("limite de presentes de hoje atingido", 429);
     const giftId = randomToken(12);
     await addToInbox(env, target.uh, { id: giftId, k: "gift", e: emblem, from, at: now, gn: grp.name });
     // desconta já do repetido registrado, para não presentear duas vezes antes do próximo envio do app
