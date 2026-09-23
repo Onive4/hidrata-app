@@ -30,8 +30,9 @@ function syncAvailable() {
 function syncBase() {
   return PUSH_SERVER_URL.replace(/\/$/, "");
 }
+// Só sincroniza com consentimento explícito (cloudSync === true).
 function syncEnabledFor(profile) {
-  return !!profile && profile.authProvider === "google" && profile.cloudSync !== false;
+  return !!profile && profile.authProvider === "google" && profile.cloudSync === true;
 }
 
 // ---------- sessão (token opaco emitido pelo nosso servidor) ----------
@@ -434,8 +435,10 @@ function updateSyncUI() {
     statusEl.textContent = "Conta local: seus dados ficam só neste aparelho. Entre com o Google para sincronizar entre aparelhos.";
     return;
   }
-  if (currentProfile.cloudSync === false) {
-    statusEl.textContent = "Sincronização desativada (seus dados da nuvem foram apagados).";
+  if (currentProfile.cloudSync !== true) {
+    statusEl.textContent = currentProfile.cloudSync === false
+      ? "Sincronização desativada. Seus dados ficam só neste aparelho."
+      : "Sincronização ainda não ativada. Seus dados ficam só neste aparelho.";
     nowBtn.textContent = "☁️ Ativar sincronização";
     return;
   }
@@ -452,9 +455,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (!nowBtn || !delBtn) return;
 
   nowBtn.addEventListener("click", async () => {
-    if (currentProfile.cloudSync === false) {
-      currentProfile.cloudSync = true;
-      saveProfiles();
+    if (currentProfile.cloudSync !== true) {
+      askCloudConsent();
+      return;
     }
     showToast("🔄 Sincronizando...");
     const ok = await syncNow({ manual: true });

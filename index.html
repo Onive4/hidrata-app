@@ -206,6 +206,22 @@
         <button id="btn-sync-now" class="btn-secondary">🔄 Sincronizar agora</button>
         <button id="btn-sync-delete" class="btn-secondary">🗑️ Apagar meus dados da nuvem</button>
       </div>
+      <div class="sync-card">
+        <h3>🔒 Bloqueio por PIN</h3>
+        <p id="lock-status" class="sync-status"></p>
+        <p class="sync-note">Pede o PIN ao abrir o app e depois de 1 minuto fora dele. É uma trava de tela: não criptografa os dados guardados no aparelho.</p>
+        <input id="pin-current" class="pin-input hidden" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="PIN atual" />
+        <input id="pin-new" class="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="Novo PIN (4 a 6 números)" />
+        <input id="pin-confirm" class="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="Repita o novo PIN" />
+        <button id="btn-pin-save" class="btn-secondary">Salvar PIN</button>
+        <button id="btn-pin-remove" class="btn-secondary hidden">Remover PIN</button>
+      </div>
+      <div class="sync-card">
+        <h3>📄 Privacidade</h3>
+        <p class="sync-note">Você pode levar seus dados com você ou ler como eles são tratados.</p>
+        <button id="btn-export-data" class="btn-secondary">📦 Exportar meus dados</button>
+        <button id="btn-open-policy" class="btn-secondary">📄 Política de privacidade</button>
+      </div>
       <button id="btn-reset-data" class="btn-danger">Apagar meus dados deste perfil</button>
       <button id="btn-remove-profile" class="btn-danger">Remover este perfil do aparelho</button>
       <button id="btn-disable-push" class="btn-secondary">🔕 Desativar notificações no servidor</button>
@@ -214,7 +230,64 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <!-- consentimento para sincronizar na nuvem -->
+  <div id="consent-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+    <div class="modal-card">
+      <h2 id="consent-title">☁️ Sincronizar entre aparelhos?</h2>
+      <p>Se você aceitar, guardamos na nuvem (servidor do Cloudflare) só: <strong>peso, nível de atividade, horários, intervalo de lembrete e seu histórico de água e conquistas</strong>. Peso e hábitos de hidratação são dados de saúde, por isso pedimos sua autorização.</p>
+      <p>Nunca guardamos seu e-mail, nome ou foto. Seu login do Google é conferido no servidor e os dados ficam ligados apenas a um código derivado dele.</p>
+      <p>Você pode apagar tudo da nuvem quando quiser (Perfil → Apagar meus dados da nuvem) e exportar seus dados. Sem aceitar, o app funciona normalmente, com os dados só neste aparelho.</p>
+      <button id="btn-consent-policy" class="btn-link">Ler a política de privacidade</button>
+      <button id="btn-consent-accept" class="btn-primary">Aceitar e sincronizar</button>
+      <button id="btn-consent-decline" class="btn-secondary">Agora não</button>
+    </div>
+  </div>
+
+  <!-- política de privacidade -->
+  <div id="privacy-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="privacy-title">
+    <div class="modal-card">
+      <h2 id="privacy-title">📄 Política de privacidade</h2>
+      <h3>Quem é o responsável</h3>
+      <p>O Hidrata é um app pessoal. O responsável pelos dados é o dono do projeto (Raphael). Dúvidas ou pedidos: abra uma solicitação em github.com/Onive4/hidrata-app/issues.</p>
+      <h3>Que dados existem e onde ficam</h3>
+      <ul>
+        <li><strong>Sempre, só no seu aparelho:</strong> seu perfil (nome, e-mail, peso, atividade, horários) e o histórico de água, conquistas e emblemas.</li>
+        <li><strong>Na nuvem, só se você aceitar a sincronização:</strong> peso, atividade, horários, intervalo de lembrete e histórico/conquistas, ligados a um código derivado do seu ID do Google. Nunca e-mail, nome ou foto.</li>
+        <li><strong>Para notificações com o app fechado, só se você ativar:</strong> o endereço técnico de notificação do seu navegador, seus horários e o fuso. Some sozinho após 90 dias sem uso.</li>
+        <li><strong>Login com Google:</strong> o Google confirma quem você é. O servidor recebe o token do login (que contém e-mail, nome e foto) só para validar e não o guarda.</li>
+      </ul>
+      <h3>Para que usamos</h3>
+      <p>Somente para lembrar você de beber água e sincronizar seu progresso. Não vendemos dados, não há publicidade nem ferramentas de análise de uso.</p>
+      <h3>Com quem passam</h3>
+      <p>Apenas prestadores técnicos: Google (login e entrega de notificações), Apple, Mozilla e Microsoft (entrega de notificações no seu navegador), Cloudflare (servidor) e GitHub (hospedagem do site).</p>
+      <h3>Por quanto tempo</h3>
+      <p>Na nuvem, até você apagar. Sessões de login: 60 dias. Registros de notificação: 90 dias sem uso. No aparelho, até você remover o perfil.</p>
+      <h3>Seus direitos (LGPD)</h3>
+      <p>Você pode confirmar e acessar seus dados (Exportar meus dados), corrigi-los (editar o Perfil), eliminá-los (Apagar meus dados da nuvem e Remover este perfil do aparelho), e revogar o consentimento a qualquer momento (desativando a sincronização).</p>
+      <h3>Segurança</h3>
+      <p>Conexão criptografada (HTTPS), login verificado no servidor, dados isolados por usuário e servidor que só fala com este site. Nenhum sistema é 100% seguro. Os dados na nuvem não têm criptografia ponta a ponta: quem administra o servidor consegue acessá-los tecnicamente.</p>
+      <p class="sync-note">Texto informativo simples, versão 1 (setembro de 2026). Não substitui aconselhamento jurídico.</p>
+      <button id="btn-close-policy" class="btn-primary">Fechar</button>
+    </div>
+  </div>
+
+  <!-- bloqueio por PIN -->
+  <section id="screen-lock" class="lock-screen hidden" aria-label="App bloqueado">
+    <div class="lock-card">
+      <div class="lock-icon">🔒</div>
+      <h2>Hidrata bloqueado</h2>
+      <form id="form-unlock" class="lock-form">
+        <input id="lock-input" class="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="Digite seu PIN" />
+        <button type="submit" class="btn-primary">Desbloquear</button>
+      </form>
+      <p id="lock-msg" class="lock-msg"></p>
+      <button id="btn-forgot-pin" class="btn-link">Esqueci o PIN</button>
+    </div>
+  </section>
+
+  <script src="lock.js"></script>
   <script src="app.js"></script>
   <script src="sync.js"></script>
+  <script src="privacy.js"></script>
 </body>
 </html>

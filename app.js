@@ -531,6 +531,7 @@ function login(email) {
   resetSyncState();
   updateSyncUI();
   scheduleSync(800);
+  maybeAskCloudConsent();
 }
 
 function logout() {
@@ -846,12 +847,18 @@ function handleGoogleCredential(response) {
   startCloudSession(email, response.credential);
 }
 
+// A nuvem só é contatada com consentimento: sem ele, o token do Google fica só na memória
+// até o usuário responder ao pedido de autorização.
 function startCloudSession(email, credential) {
-  if (typeof establishSession !== "function") return;
-  establishSession(email, credential).then((ok) => {
-    updateSyncUI();
-    if (ok) syncNow();
-  });
+  rememberGoogleCredential(credential);
+  if (currentProfile && currentProfile.cloudSync === true) {
+    establishSession(email, credential).then((ok) => {
+      updateSyncUI();
+      if (ok) syncNow();
+    });
+  } else {
+    maybeAskCloudConsent();
+  }
 }
 
 let googleScriptRequested = false;
