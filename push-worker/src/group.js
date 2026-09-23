@@ -1,11 +1,11 @@
 /* Grupos do Hidrata: grupo por convite, Jarra semanal, cutucar, aplaudir e presentes.
    Modelo de dados no KV (sem transações, então cada pessoa escreve só no próprio registro):
-     grp:<gid>          o grupo (nome, meta em %, Jarra). Escrito só pelo criador e pelo fechamento da semana.
+     grp:<gid>          o grupo (nome, meta em %, Jarra, lista de membros). Escrito por quem cria, entra, sai e pelo fechamento da semana.
      gm:<gid>:<uh>      o que UM membro compartilha (apelido, dias, emblemas...). Escrito só por ele.
      ug:<uh>            em que grupo o usuário está (no máximo um).
      inv:<CODIGO>       código de convite -> grupo.
      ud:<uh> / dv:<id>  aparelhos de push do usuário (para cutucar/aplaudir/presentear).
-     gi:<uh>:<giftId>   presente esperando ser recebido.
+     gx:<uh>            caixa de entrada: presentes e reações esperando serem vistos.
      rl:...             limites de uso (expiram sozinhos).
    <uh> é o hash do ID do Google (a mesma chave do resto do app): nunca e-mail, nome real ou o ID bruto. */
 
@@ -13,14 +13,11 @@ const MAX_MEMBERS = 12;
 const MAX_BODY_BYTES = 8192;
 const MEMBER_TTL_SECONDS = 60 * 24 * 3600;
 const DEVICE_LINK_TTL_SECONDS = 90 * 24 * 3600;
-const GIFT_TTL_SECONDS = 30 * 24 * 3600;
 const MAX_DEVICES_PER_USER = 5;
 const SNAPSHOT_REFRESH_MS = 6 * 3600 * 1000;
 const DEFAULT_PCT = 80;
 const MIN_PCT = 50;
 const MAX_PCT = 100;
-const POKES_PER_DAY = 10;
-const GIFTS_PER_DAY = 20;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TEXT_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._'’-]*$/u;
@@ -44,6 +41,15 @@ const EMBLEM_LABELS = {
   coral: "Coral", sereia: "Sereia", tridente: "Tridente de Poseidon", baleia: "Baleia Mística", dragao: "Dragão das Águas",
   reidosmares: "Rei dos Mares", kraken: "Kraken", cisne: "Cisne Encantado", presagio: "Presságio das Marés",
 };
+
+// Reações: cada uma tem uma regra do que precisa ser verdade para poder mandar (null = ainda não dá).
+const REACTIONS = {
+  clap: (n, s) => (s.streak >= 3 ? `👏 ${n} aplaudiu seus ${s.streak} dias seguidos!` : s.counted >= 3 ? `👏 ${n} aplaudiu sua semana: ${s.counted} dias contados!` : null),
+  fire: (n, s) => (s.streak >= 3 ? `🔥 ${n} mandou fogo pra sua sequência de ${s.streak} dias!` : null),
+  muscle: (n) => `💪 ${n} mandou força pra você!`,
+  party: (n, s) => (s.counted >= 1 ? `🎉 ${n} comemorou com você!` : null),
+};
+const INBOX_KINDS = ["poke", "gift", ...Object.keys(REACTIONS)];
 
 const POKE_MESSAGES = [
   (n) => `💧 ${n} te mandou um copo d'água. Bora beber?`,
@@ -240,6 +246,17 @@ async function memberId(gid, uh, deps) {
   return (await deps.sha256Hex(`${gid}:${uh}`)).slice(0, 20);
 }
 
+// A lista de membros fica dentro do grupo (`grp.members`): assim ler o grupo não gasta "listagens"
+// do KV (o plano grátis só tem 1.000 por dia). Entrar e sair mexem nela; quem some por engano se cura sozinho.
+async function membersOf(env, grp) {
+  if (Array.isArray(grp.members)) return grp.members;
+  // grupo criado antes dessa lista: uma única listagem para migrar
+  const prefix = `gm:${grp.id}:`;
+  grp.members = (await listAll(env, prefix)).map((n) => n.slice(prefix.length));
+  await putJson(env, `grp:${grp.id}`, grp);
+  return grp.members;
+}
+
 async function getMyGroup(env, uh) {
   const ug = await getJson(env, `ug:${uh}`);
   if (!ug || !GID_RE.test(ug.gid || "")) return null;
@@ -248,33 +265,60 @@ async function getMyGroup(env, uh) {
     await env.SUBS.delete(`ug:${uh}`); // vínculo velho (grupo apagado ou registro expirado)
     return null;
   }
+  const list = await membersOf(env, grp);
+  if (!list.includes(uh)) {
+    // duas entradas ao mesmo tempo podem sobrescrever uma à outra: quem sumiu da lista volta a ela
+    grp.members = [...list, uh];
+    await putJson(env, `grp:${grp.id}`, grp);
+  }
   return { grp, me };
 }
 
-async function loadMembers(env, gid, myUh, myRec) {
-  const prefix = `gm:${gid}:`;
-  const names = await listAll(env, prefix);
-  const out = await Promise.all(names.map(async (n) => ({ uh: n.slice(prefix.length), rec: await getJson(env, n) })));
+async function loadMembers(env, grp, myUh, myRec) {
+  const uhs = await membersOf(env, grp);
+  const out = await Promise.all(uhs.map(async (uh) => ({ uh, rec: uh === myUh && myRec ? myRec : await getJson(env, `gm:${grp.id}:${uh}`) })));
   const list = out.filter((x) => x.rec);
-  // a listagem do KV pode demorar a mostrar registros recém-criados: quem pede sempre se vê
   if (myRec && !list.some((x) => x.uh === myUh)) list.push({ uh: myUh, rec: myRec });
   return list;
 }
 
-// Sai do grupo apagando o que ele compartilhou, o vínculo de push e presentes pendentes.
+// ---------- caixa de entrada: presentes e reações (uma chave por pessoa) ----------
+const INBOX_MAX = 30;
+const INBOX_TTL_SECONDS = 3 * 24 * 3600;
+const INBOX_KEEP_MS = 48 * 3600 * 1000;
+async function readInbox(env, uh) {
+  const box = await getJson(env, `gx:${uh}`);
+  return box && Array.isArray(box.items) ? box.items : [];
+}
+async function addToInbox(env, uh, item) {
+  const now = Date.now();
+  const items = (await readInbox(env, uh)).filter((x) => now - (x.at || 0) < INBOX_KEEP_MS).slice(-(INBOX_MAX - 1));
+  items.push(item);
+  await putJson(env, `gx:${uh}`, { items }, INBOX_TTL_SECONDS);
+}
+async function removeFromInbox(env, uh, ids) {
+  const items = await readInbox(env, uh);
+  const keep = items.filter((x) => !ids.includes(x.id));
+  if (keep.length === items.length) return;
+  if (keep.length) await putJson(env, `gx:${uh}`, { items: keep }, INBOX_TTL_SECONDS);
+  else await env.SUBS.delete(`gx:${uh}`);
+}
+
+// Sai do grupo apagando o que ele compartilhou, o vínculo de push e o que estava na caixa de entrada.
 async function removeUserFromGroup(env, uh) {
   const ug = await getJson(env, `ug:${uh}`);
   await env.SUBS.delete(`ug:${uh}`);
   const ud = await getJson(env, `ud:${uh}`);
   if (ud && Array.isArray(ud.ids)) for (const id of ud.ids) if (DEVICE_ID_RE.test(id)) await env.SUBS.delete(`dv:${id}`);
   await env.SUBS.delete(`ud:${uh}`);
-  await deleteAll(env, `gi:${uh}:`);
+  await env.SUBS.delete(`gx:${uh}`);
   if (!ug || !GID_RE.test(ug.gid || "")) return;
   const gid = ug.gid;
   await env.SUBS.delete(`gm:${gid}:${uh}`);
   const grp = await getJson(env, `grp:${gid}`);
   if (!grp) return;
-  const rest = (await loadMembers(env, gid)).filter((m) => m.uh !== uh);
+  grp.members = (await membersOf(env, grp)).filter((x) => x !== uh);
+  const rest = await loadMembers(env, grp);
   if (!rest.length) {
     await env.SUBS.delete(`grp:${gid}`);
     await env.SUBS.delete(`inv:${grp.code}`);
@@ -283,10 +327,9 @@ async function removeUserFromGroup(env, uh) {
   if (grp.creator === uh) {
     rest.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
     grp.creator = rest[0].uh;
-    await putJson(env, `grp:${gid}`, grp);
   }
+  await putJson(env, `grp:${gid}`, grp);
 }
-
 // ---------- push para os aparelhos de um usuário ----------
 async function pushToUser(env, deps, uh, body) {
   if (!env.VAPID_PRIVATE_KEY) return 0;
@@ -320,16 +363,13 @@ function publicMember(m, myUh, creatorUh) {
 
 async function buildState(env, deps, uh, mine, now) {
   let grp = mine.grp;
-  let members = await loadMembers(env, grp.id, uh, mine.me);
+  let members = await loadMembers(env, grp, uh, mine.me);
   grp = await closePastWeek(env, grp, members, now);
   const week = currentWeekOf(grp, now);
   const j = jarNumbers(grp, members, week);
-  const inboxNames = await listAll(env, `gi:${uh}:`);
-  const inbox = [];
-  for (const n of inboxNames.slice(0, 20)) {
-    const g = await getJson(env, n);
-    if (g && EMBLEM_LABELS[g.e]) inbox.push({ id: n.slice(`gi:${uh}:`.length), e: g.e, from: g.from });
-  }
+  const inbox = (await readInbox(env, uh))
+    .filter((x) => x && GIFT_ID_RE.test(x.id || "") && INBOX_KINDS.includes(x.k) && (x.k !== "gift" || EMBLEM_LABELS[x.e]))
+    .map((x) => ({ id: x.id, k: x.k, from: x.from, e: x.e, at: x.at }));
   members.sort((a, b) => (a.rec.joinedAt || 0) - (b.rec.joinedAt || 0));
   return {
     group: {
@@ -389,7 +429,7 @@ export async function handleGroup(request, env, origin, url, deps) {
     const gid = randomToken(12);
     const grp = {
       id: gid, name, code, creator: uh, tz: me.rec.tz, pct: DEFAULT_PCT, pending: null, createdAt: now,
-      jarStreak: 0, jarBest: 0, jarWeeks: 0, closedWeek: null, lastResult: null, summaryWeek: null,
+      jarStreak: 0, jarBest: 0, jarWeeks: 0, closedWeek: null, lastResult: null, summaryWeek: null, members: [uh],
     };
     const rec = { ...me.rec, mid: await memberId(gid, uh, deps), joinedAt: now, updatedAt: now };
     await putJson(env, `grp:${gid}`, grp);
@@ -416,11 +456,17 @@ export async function handleGroup(request, env, origin, url, deps) {
     }
     const me = parseMe(b.me, now);
     if (me.error) return bad(me.error);
-    const members = await loadMembers(env, gid);
+    const members = await loadMembers(env, grp);
     if (members.length >= MAX_MEMBERS) return bad("este grupo esta cheio", 409);
     const rec = { ...me.rec, mid: await memberId(gid, uh, deps), joinedAt: now, updatedAt: now };
     await putJson(env, `gm:${gid}:${uh}`, rec, MEMBER_TTL_SECONDS);
     await putJson(env, `ug:${uh}`, { gid });
+    const fresh = (await getJson(env, `grp:${gid}`)) || grp;
+    if (!(await membersOf(env, fresh)).includes(uh)) {
+      fresh.members = [...fresh.members, uh];
+      await putJson(env, `grp:${gid}`, fresh);
+    }
+    grp.members = fresh.members;
     return json(await buildState(env, deps, uh, { grp, me: rec }, now), 200, origin);
   }
 
@@ -488,7 +534,7 @@ export async function handleGroup(request, env, origin, url, deps) {
       const pct = clampInt(b.pct, MIN_PCT, MAX_PCT);
       if (pct === null) return bad("meta invalida");
       // vale a partir da próxima semana, para ninguém baixar a meta no meio dela
-      await closePastWeek(env, grp, await loadMembers(env, grp.id, uh, mine.me), now);
+      await closePastWeek(env, grp, await loadMembers(env, grp, uh, mine.me), now);
       const cur = currentWeekOf(grp, now);
       if (grp.pending && grp.pending.from <= cur) {
         grp.pct = grp.pending.value;
@@ -522,7 +568,7 @@ export async function handleGroup(request, env, origin, url, deps) {
     const { b, res } = await body();
     if (res) return res;
     if (!MID_RE.test(b.mid || "")) return bad("membro invalido");
-    const target = (await loadMembers(env, grp.id, uh, mine.me)).find((m) => m.rec.mid === b.mid);
+    const target = (await loadMembers(env, grp, uh, mine.me)).find((m) => m.rec.mid === b.mid);
     if (!target || target.uh === uh) return bad("membro nao encontrado", 404);
     await removeUserFromGroup(env, target.uh);
     return json({ ok: true }, 200, origin);
@@ -533,7 +579,7 @@ export async function handleGroup(request, env, origin, url, deps) {
     const { b, res } = await body();
     if (res) return res;
     const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string" && GIFT_ID_RE.test(x)).slice(0, 20) : [];
-    for (const id of ids) await env.SUBS.delete(`gi:${uh}:${id}`);
+    if (ids.length) await removeFromInbox(env, uh, ids);
     return json({ ok: true }, 200, origin);
   }
 
@@ -542,11 +588,10 @@ export async function handleGroup(request, env, origin, url, deps) {
     const { b, res } = await body();
     if (res) return res;
     if (!MID_RE.test(b.mid || "")) return bad("membro invalido");
-    const members = await loadMembers(env, grp.id, uh, mine.me);
+    const members = await loadMembers(env, grp, uh, mine.me);
     const target = members.find((m) => m.rec.mid === b.mid);
     if (!target || target.uh === uh) return bad("membro nao encontrado", 404);
     const from = mine.me.nick;
-    const day = localKey(now, grp.tz);
     if (!mine.me.visible || !target.rec.visible) return bad("essa pessoa esta oculta", 409);
 
     if (path === "/group/poke") {
@@ -554,24 +599,24 @@ export async function handleGroup(request, env, origin, url, deps) {
       if (target.rec.todayCounted && !stale) return bad("essa pessoa ja contou o dia de hoje", 409);
       const pairKey = `rl:poke:${uh}:${target.uh}`;
       if (await env.SUBS.get(pairKey)) return bad("voce ja cutucou essa pessoa hoje", 429);
-      const totalKey = `rl:pokes:${uh}:${day}`;
-      const total = Number((await env.SUBS.get(totalKey)) || 0);
-      if (total >= POKES_PER_DAY) return bad("limite de cutucadas de hoje atingido", 429);
       await env.SUBS.put(pairKey, "1", { expirationTtl: 20 * 3600 });
-      await env.SUBS.put(totalKey, String(total + 1), { expirationTtl: 30 * 3600 });
+      await addToInbox(env, target.uh, { id: randomToken(12), k: "poke", from, at: now });
       if (target.rec.pushOk) await pushToUser(env, deps, target.uh, POKE_MESSAGES[Math.floor(Math.random() * POKE_MESSAGES.length)](from));
       return json({ ok: true }, 200, origin);
     }
 
     if (path === "/group/cheer") {
+      const kind = b.kind === undefined ? "clap" : b.kind;
+      if (typeof kind !== "string" || !Object.prototype.hasOwnProperty.call(REACTIONS, kind)) return bad("reacao invalida");
       const counted = countedDays(target.rec, currentWeekOf(grp, now)).reduce((a, c) => a + c, 0);
-      let text;
-      if (target.rec.streak >= 3) text = `👏 ${from} aplaudiu seus ${target.rec.streak} dias seguidos!`;
-      else if (counted >= 3) text = `👏 ${from} aplaudiu sua semana: ${counted} dias contados!`;
-      else return bad("ainda nao ha o que aplaudir", 409);
+      const text = REACTIONS[kind](from, { streak: target.rec.streak, counted });
+      if (!text) return bad("ainda nao ha motivo para essa reacao", 409);
+      // uma reação de cada tipo por pessoa por dia (uma única chave guarda quais já foram)
       const pairKey = `rl:cheer:${uh}:${target.uh}`;
-      if (await env.SUBS.get(pairKey)) return bad("voce ja aplaudiu essa pessoa hoje", 429);
-      await env.SUBS.put(pairKey, "1", { expirationTtl: 20 * 3600 });
+      const used = ((await env.SUBS.get(pairKey)) || "").split(",").filter(Boolean);
+      if (used.includes(kind)) return bad("voce ja mandou essa reacao hoje", 429);
+      await env.SUBS.put(pairKey, [...used, kind].join(","), { expirationTtl: 20 * 3600 });
+      await addToInbox(env, target.uh, { id: randomToken(12), k: kind, from, at: now });
       if (target.rec.pushOk) await pushToUser(env, deps, target.uh, text);
       return json({ ok: true }, 200, origin);
     }
@@ -581,17 +626,9 @@ export async function handleGroup(request, env, origin, url, deps) {
     if (!EMBLEM_LABELS[emblem]) return bad("emblema invalido");
     if (!(mine.me.dups && mine.me.dups[emblem] >= 1)) return bad("voce nao tem esse emblema repetido", 409);
     if ((target.rec.emblems || []).includes(emblem)) return bad("essa pessoa ja tem esse emblema", 409);
-    const pending = await listAll(env, `gi:${target.uh}:`);
-    for (const n of pending) {
-      const g = await getJson(env, n);
-      if (g && g.e === emblem) return bad("esse presente ja esta a caminho", 409);
-    }
-    const dayKey = `rl:gifts:${uh}:${day}`;
-    const sent = Number((await env.SUBS.get(dayKey)) || 0);
-    if (sent >= GIFTS_PER_DAY) return bad("limite de presentes de hoje atingido", 429);
-    await env.SUBS.put(dayKey, String(sent + 1), { expirationTtl: 30 * 3600 });
+    if ((await readInbox(env, target.uh)).some((x) => x.k === "gift" && x.e === emblem)) return bad("esse presente ja esta a caminho", 409);
     const giftId = randomToken(12);
-    await putJson(env, `gi:${target.uh}:${giftId}`, { e: emblem, from, at: now }, GIFT_TTL_SECONDS);
+    await addToInbox(env, target.uh, { id: giftId, k: "gift", e: emblem, from, at: now });
     // desconta já do repetido registrado, para não presentear duas vezes antes do próximo envio do app
     const dups = { ...mine.me.dups };
     if (dups[emblem] > 1) dups[emblem]--;
@@ -600,28 +637,36 @@ export async function handleGroup(request, env, origin, url, deps) {
     if (target.rec.pushOk) await pushToUser(env, deps, target.uh, `🎁 ${from} te deu o emblema ${EMBLEM_LABELS[emblem]}! Abra o app para receber.`);
     return json({ ok: true, giftId }, 200, origin);
   }
-
   return null;
 }
 
 export { removeUserFromGroup };
 
 // ---------- cron: resumo de domingo à noite e limpeza ----------
+// Só lê os membros quando precisa (resumo de domingo ou limpeza diária): o resto do tempo é uma leitura por grupo.
 export async function processGroups(env, deps, now = Date.now()) {
+  const utc = new Date(now);
+  const dailyCleanup = utc.getUTCHours() === 6 && utc.getUTCMinutes() < 15;
   for (const name of await listAll(env, "grp:")) {
     try {
       const grp = await getJson(env, name);
       if (!grp) continue;
-      const members = await loadMembers(env, grp.id);
+      const local = new Date(now + grp.tz * 60000);
+      const week = currentWeekOf(grp, now);
+      const summaryDue = local.getUTCDay() === 0 && local.getUTCHours() >= 19 && grp.summaryWeek !== week;
+      if (!summaryDue && !dailyCleanup) continue;
+
+      const members = await loadMembers(env, grp);
       if (!members.length) {
         await env.SUBS.delete(name); // ninguém ativo há mais de 60 dias
         await env.SUBS.delete(`inv:${grp.code}`);
         continue;
       }
-      const local = new Date(now + grp.tz * 60000);
-      const week = currentWeekOf(grp, now);
-      const sundayEvening = local.getUTCDay() === 0 && local.getUTCHours() >= 19;
-      if (!sundayEvening || grp.summaryWeek === week) continue;
+      if (members.length !== (grp.members || []).length) {
+        grp.members = members.map((m) => m.uh); // tira quem expirou
+        await putJson(env, name, grp);
+      }
+      if (!summaryDue) continue;
 
       const j = jarNumbers(grp, members, week);
       grp.summaryWeek = week;
@@ -639,6 +684,5 @@ export async function processGroups(env, deps, now = Date.now()) {
     }
   }
 }
-
 // exportado para testes
 export const _internal = { closePastWeek, jarNumbers, weekStartOfKey, shiftKey, currentWeekOf, parseMe, normalizeCode, cleanText };

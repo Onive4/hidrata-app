@@ -713,3 +713,68 @@ h2 { font-size: 15px; color: var(--muted); margin: 18px 0 10px; }
 @media (prefers-reduced-motion: reduce) {
   .g-jar .wave { animation: none; }
 }.g-goal > b { white-space: nowrap; }
+
+/* ---------- GRUPO: animações e interação ---------- */
+#g-fx { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 90; }
+.g-particle { position: absolute; left: 0; top: 0; line-height: 1; will-change: transform, opacity; user-select: none; }
+.g-confetti { width: 8px; height: 13px; border-radius: 2px; }
+.g-ring { display: block; border: 2px solid var(--teal-light); border-radius: 50%; box-sizing: border-box; }
+.g-ripple { position: absolute; border-radius: 50%; background: rgba(94, 234, 212, 0.55); pointer-events: none; will-change: transform, opacity; }
+.g-btn, .g-chip, .g-tile, .g-invite, .g-react, .g-stepper button { position: relative; overflow: hidden; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.g-btn, .g-chip, .g-tile, .g-invite, .g-react, .g-stepper button, .g-switch { transition: transform .18s cubic-bezier(.34,1.56,.64,1), background-color .18s ease, border-color .18s ease, opacity .2s ease; }
+.g-btn:active, .g-chip:active, .g-invite:active, .g-react:active, .g-stepper button:active { transform: scale(.92); }
+.g-btn.sent, .g-btn:disabled { transition: none; }
+
+.g-bubble { position: absolute; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); background: var(--card-2); color: var(--text); border: 1px solid var(--teal); border-radius: 999px; padding: 9px 16px; font-size: 14px; font-weight: 600; white-space: nowrap; box-shadow: 0 8px 24px -10px rgba(0,0,0,.7); will-change: transform, opacity; }
+
+/* presente recebido */
+.g-overlay { position: fixed; inset: 0; z-index: 95; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(3, 8, 18, 0.8); animation: g-fade .22s ease both; }
+.g-overlay.out { animation: g-fade-out .22s ease both; }
+.g-gift-card { position: relative; overflow: hidden; width: 100%; max-width: 320px; text-align: center; background: var(--card); border: 1px solid var(--rarity-lendario, #fbbf24); border-radius: 22px; padding: 28px 20px 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; box-shadow: 0 0 40px -10px #fbbf24; animation: g-pop-in .5s cubic-bezier(.34,1.56,.64,1) both; }
+.g-gift-card h3 { margin: 6px 0 0; font-size: 17px; position: relative; }
+.g-gift-card p { margin: 0; color: var(--muted); font-size: 14px; position: relative; }
+.g-gift-card .btn-primary { width: 100%; margin-top: 10px; position: relative; }
+.g-rays { position: absolute; left: 50%; top: 62px; width: 340px; height: 340px; margin: -170px 0 0 -170px; background: repeating-conic-gradient(rgba(251,191,36,.22) 0 12deg, transparent 12deg 30deg); border-radius: 50%; -webkit-mask-image: radial-gradient(circle, #000 0, transparent 68%); mask-image: radial-gradient(circle, #000 0, transparent 68%); animation: g-spin 14s linear infinite; will-change: transform; }
+.g-gift-emb { position: relative; font-size: 68px; line-height: 1; animation: g-emblem-in .8s cubic-bezier(.34,1.56,.64,1) .12s both; }
+.g-gift-emb .letter { font-size: 52px; font-weight: 800; color: var(--muted); }
+
+/* bandeja de reações */
+.g-tray { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 6px; padding-top: 4px; transform-origin: top left; }
+.g-react { display: inline-flex; align-items: center; gap: 6px; background: var(--card-2); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; color: var(--text); cursor: pointer; animation: g-pop-in .34s cubic-bezier(.34,1.56,.64,1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+.g-react-e { font-size: 18px; line-height: 1; }
+.g-react:disabled { opacity: .35; cursor: default; }
+.g-react.used { opacity: 1; color: var(--teal-light); border-color: var(--teal); background: transparent; }
+.g-react.used .g-react-l::after { content: " ✓"; }
+
+/* entrada da tela e microinterações */
+.g-enter > * { animation: g-rise .45s cubic-bezier(.2,.8,.3,1) both; animation-delay: calc(var(--i, 0) * 60ms); }
+.g-feed li { animation: g-rise .4s ease both; animation-delay: calc(var(--i, 0) * 70ms + 200ms); }
+.g-dot.pop { animation: g-dot-pop .6s cubic-bezier(.34,1.56,.64,1) both; }
+.g-detail.fresh { animation: g-pop-in .34s cubic-bezier(.34,1.56,.64,1) both; }
+.g-grid.swap { animation: g-fade .28s ease both; }
+.g-jar-wrap.full { animation: g-glow 2.4s ease-in-out infinite; border-color: #fbbf24; }
+.g-btn.danger.armed, .g-leave.armed { animation: g-arm .5s ease both; }
+.g-counted { animation: g-fade .3s ease both; }
+
+/* carregando */
+.g-skel { border-radius: 16px; background: linear-gradient(100deg, var(--card) 30%, var(--card-2) 50%, var(--card) 70%); background-size: 300% 100%; animation: g-shimmer 1.4s linear infinite; }
+.g-skel-head { height: 54px; }
+.g-skel-jar { height: 180px; border-radius: 18px; }
+.g-skel-row { height: 64px; }
+
+@keyframes g-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes g-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes g-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes g-pop-in { 0% { opacity: 0; transform: scale(.7); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes g-emblem-in { 0% { opacity: 0; transform: scale(.2) rotate(-25deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+@keyframes g-spin { to { transform: rotate(360deg); } }
+@keyframes g-dot-pop { 0% { transform: scale(.4); } 55% { transform: scale(1.35); } 100% { transform: scale(1); } }
+@keyframes g-glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(251,191,36,0); } 50% { box-shadow: 0 0 26px -4px rgba(251,191,36,.6); } }
+@keyframes g-arm { 0% { transform: translateX(0); } 20% { transform: translateX(-5px); } 40% { transform: translateX(5px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } 100% { transform: translateX(0); } }
+@keyframes g-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .g-enter > *, .g-feed li, .g-dot.pop, .g-detail.fresh, .g-grid.swap, .g-jar-wrap.full, .g-react, .g-overlay, .g-gift-card, .g-gift-emb, .g-rays, .g-skel, .g-btn.danger.armed, .g-leave.armed, .g-counted { animation: none !important; }
+  #g-water { transition: none !important; }
+  .g-btn, .g-chip, .g-tile, .g-invite, .g-react, .g-stepper button, .g-switch { transition: none !important; }
+}

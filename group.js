@@ -1,4 +1,4 @@
-/* Grupos do Hidrata (aba Grupo). Depende de app.js, sync.js e privacy.js.
+/* Grupos do Hidrata (aba Grupo). Depende de app.js, sync.js, privacy.js e fx.js.
    Compartilha com o grupo só: apelido, dias da semana que chegaram à meta, sequência, nível, emblemas
    e (se a pessoa ligar) o endereço da foto do Google. Nunca litros, peso, horários, e-mail ou nome.
    Tudo o que vem do servidor é tratado como não confiável: só vira texto (textContent), nunca HTML. */
@@ -9,7 +9,6 @@ const GROUP_SNAPSHOT_MAX_AGE_MS = 5 * 3600 * 1000;
 const GROUP_DEVICE_LINK_MS = 24 * 3600 * 1000;
 const GROUP_PHOTO_RE = /^https:\/\/lh[3-6]\.googleusercontent\.com\/[A-Za-z0-9_\-\/=.]{1,300}$/;
 const GROUP_TEXT_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._'’-]*$/u;
-const GROUP_MEMBER_RE = /^[0-9a-f]{20}$/;
 const GROUP_GIFT_ID_RE = /^[A-Za-z0-9_-]{16,24}$/;
 const GROUP_DAY_LETTERS = ["S", "T", "Q", "Q", "S", "S", "D"];
 const GROUP_TROPHIES = {
@@ -18,6 +17,20 @@ const GROUP_TROPHIES = {
   ouro: { name: "Ouro", color: "#fbbf24", next: null },
 };
 const GROUP_JAR = { top: 44, height: 108 };
+// Reações: o servidor confere as mesmas regras (precisa ser verdade para poder mandar).
+const GROUP_REACTIONS = [
+  { k: "clap", e: "👏", label: "Aplaudir", need: "precisa de 3 dias seguidos ou 3 dias contados na semana" },
+  { k: "fire", e: "🔥", label: "Fogo", need: "precisa de 3 dias seguidos" },
+  { k: "muscle", e: "💪", label: "Força", need: "" },
+  { k: "party", e: "🎉", label: "Festa", need: "precisa de 1 dia contado na semana" },
+];
+const GROUP_INCOMING_TEXT = {
+  poke: (n) => `💧 ${n} te cutucou`,
+  clap: (n) => `👏 ${n} aplaudiu você`,
+  fire: (n) => `🔥 ${n} mandou fogo`,
+  muscle: (n) => `💪 ${n} mandou força`,
+  party: (n) => `🎉 ${n} comemorou com você`,
+};
 
 let groupState = null; // resposta do servidor: { group, members, inbox }
 let groupBusy = false;
@@ -29,7 +42,10 @@ let groupLastSnap = { hash: "", at: 0 };
 let groupUi = freshGroupUi();
 
 function freshGroupUi() {
-  return { other: null, filter: "all", sel: "", needFeed: false, feed: [], kickArm: "", leaveArm: false, dirty: false, msg: "", msgOk: false, albumEl: null, jarReady: false };
+  return {
+    other: null, filter: "all", sel: "", kickArm: "", leaveArm: false, dirty: false, msg: "", msgOk: false, albumEl: null,
+    needFeed: false, feed: [], enter: false, prevDays: {}, lastDrops: null, lastFill: null, animSel: "", animGrid: false, sig: "", hold: 0, pendingRender: false,
+  };
 }
 
 // ---------- utilidades ----------
@@ -234,35 +250,97 @@ async function linkPushDevice() {
   }
 }
 
-async function receiveGifts(inbox) {
+// ---------- caixa de entrada: presentes e reações ----------
+async function receiveInbox(inbox) {
   if (!Array.isArray(inbox) || !inbox.length) return;
+  const prefs = groupPrefs();
+  const seen = new Set(prefs.seenEv || []);
   const d = currentData;
-  const got = [];
+  const gifts = [];
+  const reacts = [];
   const ackIds = [];
-  for (const g of inbox) {
-    if (!g || typeof g.id !== "string" || !GROUP_GIFT_ID_RE.test(g.id) || !knownEmblem(g.e)) continue;
-    ackIds.push(g.id);
-    const key = g.e + ":" + g.id;
-    if (d.giftIn.includes(key)) continue;
-    d.giftIn.push(key);
-    if (!d.emblems.includes(g.e)) d.emblems.push(g.e);
-    got.push(g);
+  for (const it of inbox) {
+    if (!it || typeof it.id !== "string" || !GROUP_GIFT_ID_RE.test(it.id)) continue;
+    ackIds.push(it.id);
+    const from = cleanGroupText(it.from, 20) || "Alguém do grupo";
+    if (it.k === "gift") {
+      const emblem = knownEmblem(it.e);
+      const key = emblem ? it.e + ":" + it.id : "";
+      if (!emblem || d.giftIn.includes(key)) continue;
+      d.giftIn.push(key);
+      if (!d.emblems.includes(it.e)) d.emblems.push(it.e);
+      gifts.push({ from, emblem });
+    } else if (GROUP_INCOMING_TEXT[it.k] && !seen.has(it.id)) {
+      reacts.push({ k: it.k, text: GROUP_INCOMING_TEXT[it.k](from) });
+    }
+    seen.add(it.id);
   }
-  if (got.length) {
+  prefs.seenEv = [...seen].slice(-40);
+  saveProfiles();
+  if (gifts.length) {
     saveData();
     scheduleSync();
     renderAlbum();
     scheduleGroupSnapshot(1500);
-    const g = got[0];
-    const from = cleanGroupText(g.from, 20) || "Alguém do grupo";
-    const label = knownEmblem(g.e).label;
-    showToast(got.length === 1 ? `🎁 ${from} te deu o emblema ${label}!` : `🎁 Você recebeu ${got.length} emblemas de presente!`);
+    showGiftOverlays(gifts);
   }
+  if (reacts.length) showIncomingReactions(reacts);
   if (ackIds.length) {
     try {
       await groupApi("POST", "/group/inbox/ack", { ids: ackIds });
     } catch {}
   }
+}
+
+function showIncomingReactions(list) {
+  const shown = list.slice(0, 3);
+  shown.forEach((r, i) => FX.bubble(r.text, i * 700));
+  if (list.length > shown.length) FX.bubble(`+${list.length - shown.length} do grupo`, shown.length * 700);
+  FX.buzz([20, 50, 20]);
+  const mine = document.querySelector("#group-root .g-row.me .gavatar");
+  if (mine && groupTabActive()) {
+    if (list.some((r) => r.k === "poke")) FX.nudge(mine);
+    const first = list.find((r) => r.k !== "poke");
+    if (first) {
+      const c = FX.center(mine);
+      FX.ring(mine, "#5eead4");
+      FX.burst(c.x, c.y, first.text.slice(0, 2), 7, { spread: 70 });
+    }
+  }
+}
+
+function showGiftOverlay(g) {
+  return new Promise((resolve) => {
+    const ok = h("button", "btn-primary", "Legal!");
+    ok.type = "button";
+    const card = h("div", "g-gift-card", h("div", "g-rays"), h("div", "g-gift-emb", glyphNode(g.emblem)), h("h3", null, `🎁 ${g.from} te deu um emblema!`), h("p", null, `${g.emblem.label} · ${RARITY_LABELS[g.emblem.rarity]}`), ok);
+    const ov = h("div", "g-overlay", card);
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-modal", "true");
+    ov.setAttribute("aria-label", `${g.from} te deu o emblema ${g.emblem.label}`);
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      ov.classList.add("out");
+      setTimeout(() => {
+        ov.remove();
+        resolve();
+      }, 220);
+    };
+    ok.addEventListener("click", close);
+    ov.addEventListener("click", (e) => {
+      if (e.target === ov) close();
+    });
+    document.body.appendChild(ov);
+    ok.focus({ preventScroll: true });
+    FX.confetti(30);
+    FX.buzz([30, 50, 80]);
+    setTimeout(close, 7000);
+  });
+}
+async function showGiftOverlays(list) {
+  for (const g of list) await showGiftOverlay(g);
 }
 
 // ---------- novidades desde a última visita ----------
@@ -326,7 +404,7 @@ async function refreshGroup() {
         groupUi.needFeed = false;
       }
       if (first) scheduleGroupSnapshot(500);
-      await receiveGifts(r.data.inbox);
+      await receiveInbox(r.data.inbox);
       linkPushDevice().catch(() => {});
     }
     saveProfiles();
@@ -335,7 +413,7 @@ async function refreshGroup() {
     groupError = e.code === "unauthorized" ? "Sua sessão expirou. Toque em ⇄ (Trocar de perfil) e entre de novo com o Google." : "Não foi possível falar com o servidor agora.";
   } finally {
     groupBusy = false;
-    if (currentEmail === email) renderGroup();
+    if (currentEmail === email) renderGroup(false);
   }
 }
 
@@ -373,6 +451,7 @@ function groupOnSession() {
 function groupOnTab(tab) {
   if (tab === "group") {
     groupUi.needFeed = true;
+    groupUi.enter = true;
     groupUi.kickArm = "";
     groupUi.leaveArm = false;
     renderGroup();
@@ -425,9 +504,9 @@ function friendlyGroupError(action, r) {
   const table = {
     create: { 409: "Você já está em um grupo.", 400: "Confira o nome do grupo e o seu apelido (letras, números e espaços)." },
     join: { 404: "Não encontrei esse convite. Confira o código.", 409: "Esse grupo está cheio ou você já está em um grupo.", 429: "Muitas tentativas. Tente de novo daqui a pouco.", 400: "Confira o código e o seu apelido." },
-    poke: { 409: "Essa pessoa já contou o dia de hoje.", 429: "Você já cutucou essa pessoa hoje (ou atingiu o limite do dia)." },
-    cheer: { 409: "Ainda não há o que aplaudir.", 429: "Você já aplaudiu essa pessoa hoje." },
-    gift: { 409: "Esse presente não dá agora: a pessoa já tem o emblema ou já há um a caminho.", 429: "Limite de presentes de hoje atingido." },
+    poke: { 409: "Essa pessoa já contou o dia de hoje.", 429: "Você já cutucou essa pessoa hoje." },
+    cheer: { 409: "Ainda não dá para mandar essa reação.", 429: "Você já mandou essa reação hoje." },
+    gift: { 409: "Esse presente não dá agora: a pessoa já tem o emblema ou já há um a caminho." },
     settings: { 403: "Só quem criou o grupo pode mudar isso." },
   };
   return (table[action] && table[action][s]) || "Não foi possível agora. Tente de novo em instantes.";
@@ -472,9 +551,12 @@ function onJoinedGroup(data) {
   saveProfiles();
   groupState = data;
   groupUi = freshGroupUi();
+  groupUi.enter = true;
   groupLastSnap = { hash: stableStringify(buildGroupMe()), at: Date.now() };
   linkPushDevice().catch(() => {});
   renderGroup();
+  FX.confetti(24);
+  FX.buzz([20, 40, 60]);
 }
 
 async function leaveGroup() {
@@ -495,7 +577,8 @@ function actKey(kind, mid) {
   return kind + ":" + mid;
 }
 function actDoneToday(kind, mid) {
-  return groupPrefs().acts && groupPrefs().acts[actKey(kind, mid)] === todayStr();
+  const acts = groupPrefs().acts;
+  return !!acts && acts[actKey(kind, mid)] === todayStr();
 }
 function markActDone(kind, mid) {
   const prefs = groupPrefs();
@@ -506,40 +589,167 @@ function markActDone(kind, mid) {
   prefs.acts = acts;
   saveProfiles();
 }
-async function pokeOrCheer(kind, m) {
-  const r = await runGroupAction(() => groupApi("POST", "/group/" + kind, { mid: m.mid }));
-  if (!r) return;
-  if (r.ok) {
-    markActDone(kind, m.mid);
-    showToast(kind === "poke" ? `💧 ${m.nick} recebeu um copo d'água` : `👏 Aplauso enviado para ${m.nick}`);
-  } else {
-    if (r.status === 429) markActDone(kind, m.mid);
-    showToast("⚠️ " + friendlyGroupError(kind, r));
-  }
-  renderGroup();
+
+// Enquanto uma animação voa, a tela não pode ser remontada (cortaria o efeito); o que chegou espera.
+function holdRender(ms) {
+  groupUi.hold++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    setTimeout(() => {
+      groupUi.hold = Math.max(0, groupUi.hold - 1);
+      if (groupUi.hold === 0 && groupUi.pendingRender) renderGroup(false);
+    }, ms || 1300);
+  };
 }
 
-async function sendGift(m, emblem) {
+// cutucada: uma gota voa do botão até o avatar, que balança e respinga
+async function sendPoke(m, btn, row) {
+  const release = holdRender();
+  btn.disabled = true;
+  FX.buzz(12);
+  const avatar = row.querySelector(".gavatar");
+  const request = runGroupAction(() => groupApi("POST", "/group/poke", { mid: m.mid }));
+  FX.fly(btn, avatar, "💧", {
+    ms: 620,
+    size: 26,
+    onArrive: () => {
+      if (!avatar.isConnected) return;
+      const c = FX.center(avatar);
+      FX.nudge(avatar);
+      FX.ring(avatar, "#5eead4");
+      FX.burst(c.x, c.y, ["💦", "💧"], 7, { spread: 62, size: 16 });
+    },
+  });
+  const r = await request;
+  if (r && r.ok) {
+    markActDone("poke", m.mid);
+    btn.textContent = "Enviado ✓";
+    btn.classList.add("sent");
+    FX.pulse(btn);
+    showToast(`💧 ${m.nick} recebeu um copo d'água`);
+  } else {
+    if (r && r.status === 429) {
+      markActDone("poke", m.mid);
+      btn.textContent = "Enviado ✓";
+    } else btn.disabled = false;
+    FX.shake(btn);
+    if (r) showToast("⚠️ " + friendlyGroupError("poke", r));
+  }
+  release();
+}
+
+function reactionAllowed(k, m, days) {
+  const counted = sumDays(days);
+  if (k === "clap") return m.streak >= 3 || counted >= 3;
+  if (k === "fire") return m.streak >= 3;
+  if (k === "party") return counted >= 1;
+  return true;
+}
+
+// reação: o emoji voa até o avatar e estoura em confete de emojis
+async function sendReaction(rx, m, btn, row) {
+  const release = holdRender();
+  btn.disabled = true;
+  FX.buzz(14);
+  const avatar = row.querySelector(".gavatar");
+  const request = runGroupAction(() => groupApi("POST", "/group/cheer", { mid: m.mid, kind: rx.k }));
+  FX.fly(btn, avatar, rx.e, {
+    ms: 600,
+    size: 28,
+    onArrive: () => {
+      if (!avatar.isConnected) return;
+      const c = FX.center(avatar);
+      FX.bounce(avatar);
+      FX.ring(avatar, "#fbbf24");
+      FX.burst(c.x, c.y, rx.e, 9, { spread: 76, size: 20 });
+      if (rx.k === "party") FX.confetti(16);
+    },
+  });
+  const r = await request;
+  const key = "cheer:" + rx.k;
+  if (r && r.ok) {
+    markActDone(key, m.mid);
+    btn.classList.add("used");
+    showToast(`${rx.e} ${rx.label} enviado para ${m.nick}`);
+  } else {
+    if (r && r.status === 429) {
+      markActDone(key, m.mid);
+      btn.classList.add("used");
+    } else btn.disabled = false;
+    FX.shake(btn);
+    if (r) showToast("⚠️ " + friendlyGroupError("cheer", r));
+  }
+  release();
+}
+
+function closeTray(row) {
+  const tray = row.querySelector(".g-tray");
+  if (!tray) return;
+  const finish = () => {
+    tray.remove();
+    if (groupUi.pendingRender && groupUi.hold === 0 && !document.querySelector("#group-root .g-tray")) renderGroup(false);
+  };
+  if (!FX.on()) return finish();
+  tray.animate([{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.92)" }], { duration: 160, easing: "ease-in" }).onfinish = finish;
+}
+function toggleTray(m, row, days) {
+  const open = row.querySelector(".g-tray");
+  document.querySelectorAll("#group-root .g-row").forEach((r) => r !== row && closeTray(r));
+  if (open) return closeTray(row);
+  const tray = h("div", "g-tray");
+  GROUP_REACTIONS.forEach((rx, i) => {
+    const allowed = reactionAllowed(rx.k, m, days);
+    const used = actDoneToday("cheer:" + rx.k, m.mid);
+    const b = h("button", "g-react" + (used ? " used" : ""), h("span", "g-react-e", rx.e), h("span", "g-react-l", rx.label));
+    b.type = "button";
+    b.style.setProperty("--i", i);
+    b.disabled = !allowed || used;
+    b.setAttribute("aria-label", allowed ? `${rx.label} para ${m.nick}` : `${rx.label} (${rx.need})`);
+    if (!allowed) b.title = rx.need;
+    b.addEventListener("click", async () => {
+      await sendReaction(rx, m, b, row);
+      setTimeout(() => closeTray(row), 700);
+    });
+    tray.appendChild(b);
+  });
+  row.appendChild(tray);
+}
+
+async function sendGift(m, emblem, fromEl) {
+  const release = holdRender();
+  const chip = document.querySelector('#group-root .g-chip[aria-pressed="true"]');
+  FX.buzz(16);
+  FX.fly(fromEl, chip, "🎁", { ms: 700, size: 30, arc: 90, onArrive: () => {
+    if (!chip || !chip.isConnected) return;
+    const c = FX.center(chip);
+    FX.ring(chip, "#a78bfa");
+    FX.burst(c.x, c.y, ["✨", "🎁", "⭐"], 9, { spread: 80, size: 18 });
+  } });
   const r = await runGroupAction(() => groupApi("POST", "/group/gift", { mid: m.mid, emblem: emblem.id }));
-  if (!r) return;
+  if (!r) return release();
   if (!r.ok || !r.data || !GROUP_GIFT_ID_RE.test(String(r.data.giftId || ""))) {
     showToast("⚠️ " + friendlyGroupError("gift", r));
-    return;
+    return release();
   }
   currentData.giftOut.push(emblem.id + ":" + r.data.giftId);
   saveData();
   scheduleSync();
   renderAlbum();
   showToast(`🎁 ${m.nick} recebeu ${emblem.label} de presente`);
+  FX.confetti(14);
+  release();
   await runGroupAction(() => pushGroupSnapshot(true));
   refreshGroup();
 }
 
-async function saveGroupPref(key, value) {
+// interruptores mudam no lugar (a animação do botão não some com uma nova montagem da tela)
+async function saveGroupPref(key, value, keepScreen) {
   const prefs = groupPrefs();
   prefs[key] = value;
   saveProfiles();
-  renderGroup();
+  if (!keepScreen) renderGroup();
   await runGroupAction(() => pushGroupSnapshot(true));
   refreshGroup();
 }
@@ -551,6 +761,9 @@ function changeGoal(delta) {
   if (value === base) return;
   g.pending = value === g.pct ? null : { value, from: "" };
   renderGroup();
+  const label = document.querySelector("#group-root .g-stepper span");
+  if (label) FX.pulse(label);
+  FX.buzz(8);
   clearTimeout(groupGoalTimer);
   groupGoalTimer = setTimeout(async () => {
     const r = await runGroupAction(() => groupApi("PUT", "/group/settings", { pct: value }));
@@ -576,9 +789,23 @@ async function kickMember(m) {
 }
 
 // ---------- telas ----------
-function renderGroup() {
+// Só remonta a tela quando algo mudou de verdade (a atualização a cada minuto não mexe na tela à toa).
+function groupSig() {
+  const prefs = (currentProfile && currentProfile.groupPrefs) || {};
+  return [groupError, groupBusy, JSON.stringify(groupState, (k, v) => (k === "serverNow" ? undefined : v)), JSON.stringify(prefs), todayStr(), currentData ? currentData.emblems.length + ":" + currentData.giftIn.length + ":" + currentData.giftOut.length : "", groupUi.feed.length, groupUi.msg].join("|");
+}
+
+function renderGroup(force) {
   const root = gEl("group-root");
   if (!root || !currentProfile) return;
+  const sig = groupSig();
+  if (force === false && sig === groupUi.sig) return;
+  // uma animação ou a bandeja de reações está aberta: a tela só é remontada quando ela terminar
+  if (force === false && (groupUi.hold > 0 || root.querySelector(".g-tray"))) {
+    groupUi.pendingRender = true;
+    return;
+  }
+  groupUi.pendingRender = false;
   // não apaga o que a pessoa está digitando
   const active = document.activeElement;
   if (active && root.contains(active) && active.tagName === "INPUT") {
@@ -586,22 +813,44 @@ function renderGroup() {
     return;
   }
   groupUi.dirty = false;
+  groupUi.sig = sig;
   const y = window.scrollY;
   root.textContent = "";
   groupUi.albumEl = null;
+  const prefs = groupPrefs();
+  let dashboard = false;
   if (currentProfile.authProvider !== "google") root.appendChild(gateCard("Grupos precisam de login com Google", "Entre com o Google (toque em ⇄ no topo) para criar ou entrar em um grupo. Contas locais continuam funcionando normalmente, só sem grupos."));
   else if (!syncAvailable()) root.appendChild(gateCard("Grupos indisponíveis", "O servidor não está configurado neste aparelho."));
-  else if (groupPrefs().consent !== true) root.appendChild(consentGate());
+  else if (prefs.consent !== true) root.appendChild(consentGate());
   else if (!getSession(currentEmail)) root.appendChild(gateCard("Falta entrar de novo com o Google", "Para abrir seu grupo, toque em ⇄ (Trocar de perfil) e entre com o Google outra vez. É rápido."));
-  else if (inGroup()) renderDashboard(root);
-  else if (groupBusy && !groupError) root.appendChild(gateCard("Carregando...", ""));
+  else if (inGroup()) {
+    renderDashboard(root);
+    dashboard = true;
+  } else if (prefs.inGroup && !groupError) renderSkeleton(root);
+  else if (prefs.inGroup && groupError) root.appendChild(retryCard());
+  else if (groupBusy && !groupError) renderSkeleton(root);
   else renderForms(root);
-  if (groupError && !inGroup()) root.appendChild(h("p", "g-msg", groupError));
+  if (groupError && !inGroup() && !prefs.inGroup) root.appendChild(h("p", "g-msg", groupError));
+  if (groupUi.enter && (dashboard || root.children.length)) {
+    groupUi.enter = false;
+    [...root.children].forEach((c, i) => c.style.setProperty("--i", Math.min(i, 8)));
+    root.classList.add("g-enter");
+    setTimeout(() => root.classList.remove("g-enter"), 1200);
+  }
   window.scrollTo(0, y);
 }
 
 function gateCard(title, text) {
   return h("div", "g-card", h("h3", null, title), text ? h("p", null, text) : null);
+}
+function retryCard() {
+  const retry = h("button", "btn-primary", "Tentar de novo");
+  retry.type = "button";
+  retry.addEventListener("click", refreshGroup);
+  return h("div", "g-card", h("h3", null, "Não consegui abrir seu grupo"), h("p", null, groupError), retry);
+}
+function renderSkeleton(root) {
+  root.append(h("div", "g-skel g-skel-head"), h("div", "g-skel g-skel-jar"), h("div", "g-skel g-skel-row"), h("div", "g-skel g-skel-row"));
 }
 function consentGate() {
   const btn = h("button", "btn-primary", "Criar ou entrar em um grupo");
@@ -611,7 +860,7 @@ function consentGate() {
     "div",
     "g-card",
     h("h3", null, "👥 Beba água em grupo"),
-    h("p", null, "Junte a família ou os amigos com um código de convite. Cada pessoa tem a própria meta: o grupo enche uma Jarra juntos durante a semana, se cutucam, se aplaudem e comparam os álbuns de emblemas."),
+    h("p", null, "Junte a família ou os amigos com um código de convite. Cada pessoa tem a própria meta: o grupo enche uma Jarra juntos durante a semana, se cutucam, reagem, se presenteiam e comparam os álbuns de emblemas."),
     h("p", null, "Ninguém vê quanto você bebeu. Você escolhe o que aparece e pode sair quando quiser."),
     btn
   );
@@ -694,11 +943,19 @@ function renderDashboard(root) {
 
   // cabeçalho
   const code = "AGUA-" + g.code;
-  const invite = h("button", "g-invite", h("small", null, "Convite"), h("span", null, code));
+  const codeSpan = h("span", null, code);
+  const invite = h("button", "g-invite", h("small", null, "Convite"), codeSpan);
   invite.type = "button";
   invite.setAttribute("aria-label", "Copiar código de convite " + code);
   invite.addEventListener("click", () => {
-    const done = () => showToast("Código copiado: " + code);
+    const done = () => {
+      codeSpan.textContent = "Copiado ✓";
+      FX.pulse(codeSpan);
+      FX.buzz(10);
+      setTimeout(() => {
+        if (codeSpan.isConnected) codeSpan.textContent = code;
+      }, 1600);
+    };
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done, () => showToast("Selecione e copie: " + code));
     else showToast("Selecione e copie: " + code);
   });
@@ -727,7 +984,7 @@ function renderDashboard(root) {
 
   // novidades
   if (groupUi.feed.length) {
-    root.appendChild(h("div", "g-card", h("h3", null, "Desde a sua última visita"), h("ul", "g-feed", ...groupUi.feed.map((t) => h("li", null, t)))));
+    root.appendChild(h("div", "g-card", h("h3", null, "Desde a sua última visita"), h("ul", "g-feed", ...groupUi.feed.map((t, i) => { const li = h("li", null, t); li.style.setProperty("--i", i); return li; }))));
   }
 
   root.appendChild(renderJarSection(g, week, todayIdx, drops));
@@ -772,14 +1029,14 @@ function renderJarSection(g, week, todayIdx, drops) {
   const label = svg.querySelector("#g-goal-text");
   label.setAttribute("y", goalY - 6);
   label.textContent = "meta " + goal;
+  // a água sobe do nível anterior até o novo (e enche do zero na primeira vez)
   const water = svg.querySelector("#g-water");
-  const target = `translateY(${GROUP_JAR.top + GROUP_JAR.height * (1 - fill)}px)`;
-  if (groupUi.jarReady) water.style.transform = target;
-  else {
-    requestAnimationFrame(() => setTimeout(() => { water.style.transform = target; groupUi.jarReady = true; }, 80));
-  }
+  const levelY = (f) => GROUP_JAR.top + GROUP_JAR.height * (1 - f);
+  water.style.transform = `translateY(${levelY(groupUi.lastFill === null ? 0 : groupUi.lastFill)}px)`;
+  requestAnimationFrame(() => requestAnimationFrame(() => { water.style.transform = `translateY(${levelY(fill)}px)`; }));
 
   const left = Math.max(0, goal - drops);
+  const isFull = g.activeMembers >= 2 && left === 0;
   let msg;
   if (g.activeMembers < 2) msg = h("p", null, "A Jarra só enche com duas ou mais pessoas visíveis. Convide alguém com o código acima.");
   else if (left === 0) msg = h("p", null, h("b", null, "Jarra cheia!"), " Mantendo até domingo, o grupo ganha mais uma semana na sequência.");
@@ -795,9 +1052,39 @@ function renderJarSection(g, week, todayIdx, drops) {
       : h("span", null, h("b", null, "Emblema do grupo"), `Encha a Jarra até domingo para ganhar a Jarra Bronze.${g.jarBest ? ` Melhor sequência: ${g.jarBest}.` : ""}`)
   );
 
-  sec.appendChild(h("div", "g-jar-wrap", svgBox, h("div", "g-jar-txt", h("div", "g-jar-num", h("span", null, String(drops)), " ", h("small", null, `/ ${goal} gotas`)), msg, trophyBox)));
+  const prevDrops = groupUi.lastDrops;
+  const numEl = h("span", null, String(prevDrops === null ? 0 : prevDrops));
+  const wrap = h("div", "g-jar-wrap" + (isFull ? " full" : ""), svgBox, h("div", "g-jar-txt", h("div", "g-jar-num", numEl, " ", h("small", null, `/ ${goal} gotas`)), msg, trophyBox));
+  sec.appendChild(wrap);
   sec.appendChild(h("p", "g-note", "Cada gota é um dia em que alguém chegou ao mínimo ", h("u", null, "da própria meta"), ". Ninguém precisa fechar todos os dias."));
   sec.appendChild(renderGoalBox(g));
+
+  // depois de montada: número contando, gotas caindo na Jarra e confete quando ela enche
+  const gained = prevDrops !== null && drops > prevDrops;
+  const prefs = groupPrefs();
+  const celebrate = isFull && prefs.fullShown !== week;
+  if (celebrate) {
+    prefs.fullShown = week;
+    saveProfiles();
+  }
+  groupUi.lastDrops = drops;
+  groupUi.lastFill = fill;
+  requestAnimationFrame(() => {
+    FX.count(numEl, prevDrops === null ? 0 : prevDrops, drops, 800);
+    if (!svg.isConnected) return;
+    if (gained) {
+      const r = svg.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      for (let i = 0; i < Math.min(3, drops - prevDrops); i++) FX.drop(x + (i - 1) * 14, r.top - 10, r.top + r.height * 0.5, i * 170);
+      FX.buzz(10);
+    }
+    if (celebrate) {
+      setTimeout(() => {
+        FX.confetti(30);
+        FX.buzz([30, 40, 30, 40, 80]);
+      }, 700);
+    }
+  });
   return sec;
 }
 
@@ -832,6 +1119,23 @@ function memberTodayCounted(m, week, todayIdx) {
   return m.weekStart === week && m.days[todayIdx] === 1;
 }
 
+function pokeButton(m, row) {
+  const done = actDoneToday("poke", m.mid);
+  const b = h("button", "g-btn" + (done ? " sent" : ""), done ? "Enviado ✓" : "💧 Cutucar");
+  b.type = "button";
+  b.disabled = done;
+  b.setAttribute("aria-label", `Cutucar ${m.nick} com um copo d'água`);
+  b.addEventListener("click", () => sendPoke(m, b, row));
+  return b;
+}
+function reactButton(m, row, days) {
+  const b = h("button", "g-btn", "✨ Reagir");
+  b.type = "button";
+  b.setAttribute("aria-label", `Reagir a ${m.nick}`);
+  b.addEventListener("click", () => toggleTray(m, row, days));
+  return b;
+}
+
 function renderRowsSection(st, week, todayIdx) {
   const sec = h("section", "g-sec");
   sec.appendChild(h("h3", "g-sec-title", "Constância da semana"));
@@ -841,8 +1145,10 @@ function renderRowsSection(st, week, todayIdx) {
     if (!a.visible) return 0;
     return sumDays(memberDays(b, week)) - sumDays(memberDays(a, week)) || b.streak - a.streak;
   });
+  const dayNames = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
   for (const m of order) {
     const row = h("div", "g-row" + (m.isMe ? " me" : "") + (m.visible ? "" : " hid"));
+    row.dataset.mid = m.mid;
     row.appendChild(avatarNode(m, "gavatar"));
     const who = h("div", "g-who");
     const top = h("div", "g-who-top", h("b", null, m.isMe ? `${m.nick} (você)` : m.nick));
@@ -854,26 +1160,27 @@ function renderRowsSection(st, week, todayIdx) {
     const side = h("div", "g-side");
     if (m.visible) {
       const days = memberDays(m, week);
+      const before = groupUi.prevDays[m.mid];
       const dots = h("div", "g-dots");
       dots.setAttribute("role", "img");
       const okNames = [];
-      const dayNames = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
       for (let d = 0; d < 7; d++) {
         let cls = "g-dot";
         if (days[d] === 1) {
           cls += " ok";
           okNames.push(dayNames[d]);
+          if (before && before[d] === "0") cls += " pop"; // acabou de contar: a bolinha "estoura"
         } else if (d === todayIdx) cls += " today";
         else if (d > todayIdx) cls += " future";
         dots.appendChild(h("span", cls, GROUP_DAY_LETTERS[d]));
       }
+      groupUi.prevDays[m.mid] = days.join("");
       dots.setAttribute("aria-label", "Dias que contaram: " + (okNames.length ? okNames.join(", ") : "nenhum"));
       who.appendChild(dots);
       if (!m.isMe) {
-        const counted = memberTodayCounted(m, week, todayIdx);
-        if (counted) side.appendChild(h("span", null, "hoje ✓"));
-        else side.appendChild(actionButton("poke", m, "Cutucar", `Cutucar ${m.nick} com um copo d'água`));
-        if (m.streak >= 3 || sumDays(days) >= 3) side.appendChild(actionButton("cheer", m, "👏 Aplaudir", `Aplaudir ${m.nick}`));
+        if (memberTodayCounted(m, week, todayIdx)) side.appendChild(h("span", "g-counted", "hoje ✓"));
+        else side.appendChild(pokeButton(m, row));
+        side.appendChild(reactButton(m, row, days));
       }
     } else {
       side.textContent = "oculto";
@@ -882,21 +1189,8 @@ function renderRowsSection(st, week, todayIdx) {
     rows.appendChild(row);
   }
   sec.appendChild(rows);
-  sec.appendChild(h("p", "g-note", "Ordem por dias que contaram, depois por sequência. Compara constância, nunca litros. Cutucar e aplaudir: 1 por pessoa por dia; o aviso chega se a pessoa tiver as notificações ligadas."));
+  sec.appendChild(h("p", "g-note", "Ordem por dias que contaram, depois por sequência. Compara constância, nunca litros. Cutucar: 1 por pessoa por dia. Reagir: 1 de cada tipo por pessoa por dia. O aviso chega se a pessoa tiver as notificações ligadas."));
   return sec;
-}
-
-function actionButton(kind, m, label, aria) {
-  const done = actDoneToday(kind, m.mid);
-  const b = h("button", "g-btn", done ? "Enviado ✓" : label);
-  b.type = "button";
-  b.disabled = done;
-  b.setAttribute("aria-label", aria);
-  b.addEventListener("click", () => {
-    b.disabled = true;
-    pokeOrCheer(kind, m);
-  });
-  return b;
 }
 
 // ---------- comparar álbum ----------
@@ -943,12 +1237,17 @@ function renderAlbumSection() {
       groupUi.other = m.mid;
       groupUi.sel = "";
       groupUi.filter = "all";
+      groupUi.animGrid = true;
       rerender();
     });
     chips.appendChild(c);
   }
   sec.appendChild(chips);
-  const versus = (label, n, cls) => h("div", cls, h("small", null, label), h("b", null, String(n)), h("small", null, `de ${total} emblemas`), h("div", "g-bar", (() => { const i = h("i"); i.style.width = (n / total) * 100 + "%"; return i; })()));
+  const versus = (label, n, cls) => {
+    const fillEl = h("i");
+    fillEl.style.width = (n / total) * 100 + "%";
+    return h("div", cls, h("small", null, label), h("b", null, String(n)), h("small", null, `de ${total} emblemas`), h("div", "g-bar", fillEl));
+  };
   sec.appendChild(h("div", "g-versus", versus("Você", mine.size, ""), versus(name, theirs.size, "other")));
   sec.appendChild(h("p", "g-gap", h("b", null, String(onlyThem.length)), ` que ${name} tem e você ainda não · `, h("b", null, String(onlyMe.length)), ` que você tem e ${name} não.`));
 
@@ -961,13 +1260,15 @@ function renderAlbumSection() {
     c.setAttribute("aria-pressed", String(groupUi.filter === key));
     c.addEventListener("click", () => {
       groupUi.filter = key;
+      groupUi.animGrid = true;
       rerender();
     });
     filters.appendChild(c);
   }
   sec.appendChild(filters);
 
-  const grid = h("div", "g-grid");
+  const grid = h("div", "g-grid" + (groupUi.animGrid ? " swap" : ""));
+  let selTile = null;
   for (const e of EMBLEMS) {
     const im = mine.has(e.id);
     const it = theirs.has(e.id);
@@ -981,8 +1282,11 @@ function renderAlbumSection() {
     b.setAttribute("aria-label", `${e.label}, ${RARITY_LABELS[e.rarity]}. ` + (im && it ? "Vocês dois têm." : im ? "Só você tem." : it ? `Só ${name} tem.` : "Nenhum de vocês tem."));
     b.addEventListener("click", () => {
       groupUi.sel = e.id;
+      groupUi.animSel = e.id;
+      FX.buzz(8);
       rerender();
     });
+    if (groupUi.sel === e.id) selTile = b;
     grid.appendChild(b);
   }
   sec.appendChild(grid);
@@ -1004,23 +1308,29 @@ function renderAlbumSection() {
     else if (it) text = `${name} tem e você ainda não. Continue bebendo para sortear.`;
     else text = "Nenhum de vocês tem ainda.";
     const chip = (label, on, who) => h("span", `g-who-chip ${who}` + (on ? " yes" : ""), (on ? "✓ " : "") + label);
+    const big = h("span", "big", glyphNode(sel));
     const body = h("p", null, h("b", null, sel.label), ` · ${RARITY_LABELS[sel.rarity]}`, h("br"), text, h("span", "g-who-chips", chip("Você", im, "me"), chip(name, it, "them")));
     if (im && !it && extra > 0) {
       const gift = h("button", "g-btn", `🎁 Presentear ${name}`);
       gift.type = "button";
       gift.addEventListener("click", async () => {
         gift.disabled = true;
-        await sendGift(other, sel);
+        await sendGift(other, sel, big);
       });
       body.append(h("br"), gift);
     }
-    detail.append(h("span", "big", glyphNode(sel)), body);
+    detail.append(big, body);
+    if (groupUi.animSel === sel.id) detail.classList.add("fresh");
   }
   sec.appendChild(detail);
+  if (selTile && groupUi.animSel) requestAnimationFrame(() => FX.bounce(selTile));
+  groupUi.animSel = "";
+  groupUi.animGrid = false;
   return sec;
 }
 
 // ---------- privacidade e ajustes ----------
+// O interruptor muda no lugar (com a animação) antes de a tela ser atualizada.
 function switchRow(title, hint, checked, onChange, disabled) {
   const sw = h("button", "g-switch");
   sw.type = "button";
@@ -1028,7 +1338,12 @@ function switchRow(title, hint, checked, onChange, disabled) {
   sw.setAttribute("aria-checked", String(checked));
   sw.setAttribute("aria-label", title);
   sw.disabled = !!disabled;
-  sw.addEventListener("click", () => onChange(!checked));
+  sw.addEventListener("click", () => {
+    sw.setAttribute("aria-checked", String(!checked));
+    FX.buzz(10);
+    holdRender(340)(); // deixa o interruptor terminar de deslizar antes de remontar a tela
+    onChange(!checked);
+  });
   return h("div", "g-switch-row", h("p", null, title, h("small", null, hint)), sw);
 }
 
@@ -1047,10 +1362,10 @@ function renderPrivacySection(st) {
   );
 
   const hasPhoto = !!safeGroupPhoto(currentProfile.picture);
-  sec.appendChild(switchRow("Aparecer no grupo", prefs.visible === false ? "Você fica oculto e suas gotas saem da Jarra. Você ainda vê o grupo." : "Você e suas gotas estão visíveis para todos.", prefs.visible !== false, (v) => saveGroupPref("visible", v)));
-  sec.appendChild(switchRow("Mostrar minha foto do Google", !hasPhoto ? "Sua conta do Google não tem uma foto que dê para usar." : prefs.showPhoto === true ? "Ligado: só os membros deste grupo veem a foto." : "Desligado: o grupo vê só a sua inicial.", prefs.showPhoto === true && hasPhoto, (v) => saveGroupPref("showPhoto", v), !hasPhoto));
+  sec.appendChild(switchRow("Aparecer no grupo", prefs.visible === false ? "Você fica oculto e suas gotas saem da Jarra. Você ainda vê o grupo." : "Você e suas gotas estão visíveis para todos.", prefs.visible !== false, (v) => saveGroupPref("visible", v, true)));
+  sec.appendChild(switchRow("Mostrar minha foto do Google", !hasPhoto ? "Sua conta do Google não tem uma foto que dê para usar." : prefs.showPhoto === true ? "Ligado: só os membros deste grupo veem a foto." : "Desligado: o grupo vê só a sua inicial.", prefs.showPhoto === true && hasPhoto, (v) => saveGroupPref("showPhoto", v, true), !hasPhoto));
   const notifOn = window.Notification && Notification.permission === "granted";
-  sec.appendChild(switchRow("Receber avisos do grupo", notifOn ? "Cutucadas, aplausos, presentes e o resumo de domingo." : "Ative as notificações na aba Hoje para receber avisos com o app fechado.", prefs.pushOk !== false, (v) => saveGroupPref("pushOk", v)));
+  sec.appendChild(switchRow("Receber avisos do grupo", notifOn ? "Cutucadas, reações, presentes e o resumo de domingo." : "Ative as notificações na aba Hoje para receber avisos com o app fechado.", prefs.pushOk !== false, (v) => saveGroupPref("pushOk", v, true)));
 
   // apelido
   const nick = document.createElement("input");
@@ -1077,7 +1392,7 @@ function renderPrivacySection(st) {
     manage.appendChild(rotate);
     for (const m of st.members.filter((x) => !x.isMe)) {
       const armed = groupUi.kickArm === m.mid;
-      const kick = h("button", "g-btn danger", armed ? "Toque de novo para remover" : "Remover");
+      const kick = h("button", "g-btn danger" + (armed ? " armed" : ""), armed ? "Toque de novo para remover" : "Remover");
       kick.type = "button";
       kick.addEventListener("click", () => {
         if (!armed) {
@@ -1090,7 +1405,7 @@ function renderPrivacySection(st) {
     sec.appendChild(manage);
   }
 
-  const leave = h("button", "g-leave", groupUi.leaveArm ? "Tem certeza? Toque de novo para sair (o que você compartilhava é apagado)" : "Sair do grupo");
+  const leave = h("button", "g-leave" + (groupUi.leaveArm ? " armed" : ""), groupUi.leaveArm ? "Tem certeza? Toque de novo para sair (o que você compartilhava é apagado)" : "Sair do grupo");
   leave.type = "button";
   leave.addEventListener("click", () => {
     if (!groupUi.leaveArm) {
@@ -1111,7 +1426,16 @@ document.addEventListener("DOMContentLoaded", () => {
   on("btn-gconsent-decline", declineGroupConsent);
   on("btn-gconsent-policy", () => openModal("privacy-modal"));
   const root = gEl("group-root");
-  if (root) root.addEventListener("focusout", () => setTimeout(() => { if (groupUi.dirty) renderGroup(); }, 0));
+  if (root) {
+    root.addEventListener("focusout", () => setTimeout(() => { if (groupUi.dirty) renderGroup(); }, 0));
+    // toque em qualquer botão da aba: onda + vibração curta
+    root.addEventListener("pointerdown", (ev) => {
+      const el = ev.target.closest(".g-btn, .g-chip, .g-tile, .g-invite, .g-react, .g-stepper button, .btn-primary");
+      if (!el || el.disabled) return;
+      FX.ripple(el, ev);
+      FX.buzz(6);
+    });
+  }
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible" || !currentProfile) return;
     scheduleGroupSnapshot(1000);
