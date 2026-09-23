@@ -64,7 +64,7 @@ function declineCloudConsent() {
   closeModal("consent-modal");
   currentProfile.cloudSync = false;
   saveProfiles();
-  pendingGoogleCredential = null;
+  // o token continua só na memória (some em 50 min): se a pessoa quiser entrar num grupo logo depois, não precisa logar de novo
   updateSyncUI();
   showToast("Tudo bem: seus dados ficam só neste aparelho.");
 }
@@ -104,6 +104,18 @@ function buildExport() {
     },
     conquistas: d.unlockedBadges || [],
     emblemas: d.emblemCounts || {},
+    presentesRecebidos: d.giftIn || [],
+    presentesEnviados: d.giftOut || [],
+    grupo: p.groupPrefs
+      ? {
+          consentimento: p.groupPrefs.consent === true,
+          apelido: p.groupPrefs.nick || null,
+          apareceNoGrupo: p.groupPrefs.visible !== false,
+          mostrarFoto: p.groupPrefs.showPhoto === true,
+          receberAvisos: p.groupPrefs.pushOk !== false,
+          estaEmGrupo: p.groupPrefs.inGroup === true,
+        }
+      : null,
   };
 }
 

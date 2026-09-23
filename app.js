@@ -29,14 +29,14 @@ const EMBLEMS = [
   { id: "nuvem", emoji: "☁️", label: "Nuvem", rarity: "comum", desc: "Flutuando por aí, cheia de chuva guardada." },
   { id: "copo", emoji: "🥛", label: "Copo", rarity: "comum", desc: "Companheiro fiel de todo copo d'água." },
   { id: "folha", emoji: "🍃", label: "Folha", rarity: "comum", desc: "Carrega orvalho toda manhã." },
-  { id: "bolha", emoji: "🫧", label: "Bolha", rarity: "comum", desc: "Sobe, sobe, sobe... e estoura." },
+  { id: "bolha", emoji: "🫧", alt: "🔵", label: "Bolha", rarity: "comum", desc: "Sobe, sobe, sobe... e estoura." },
   { id: "chuva", emoji: "🌧️", label: "Chuva", rarity: "comum", desc: "Molhando tudo desde sempre." },
   { id: "poca", emoji: "💦", label: "Poça", rarity: "comum", desc: "Pisou e já era o tênis." },
   { id: "torneira", emoji: "🚰", label: "Torneira", rarity: "comum", desc: "A fonte mais próxima de água de verdade." },
   { id: "guardachuva", emoji: "☂️", label: "Guarda-chuva", rarity: "comum", desc: "Proteção contra a própria água." },
   { id: "redemoinho", emoji: "🌀", label: "Redemoinho", rarity: "comum", desc: "Gira, gira e some no ralo." },
   { id: "sabonete", emoji: "🧼", label: "Sabonete", rarity: "comum", desc: "Só funciona direito com água por perto." },
-  { id: "balde", emoji: "🪣", label: "Balde", rarity: "comum", desc: "Sempre pronto pra carregar mais água." },
+  { id: "balde", emoji: "🪣", alt: "🛢️", label: "Balde", rarity: "comum", desc: "Sempre pronto pra carregar mais água." },
   // raros
   { id: "onda", emoji: "🌊", label: "Onda", rarity: "raro", desc: "Vem de longe e quebra na praia." },
   { id: "concha", emoji: "🐚", label: "Concha", rarity: "raro", desc: "Encoste no ouvido e escute o mar." },
@@ -48,7 +48,7 @@ const EMBLEMS = [
   { id: "barco", emoji: "⛵", label: "Barco a Vela", rarity: "raro", desc: "Navegando tranquilo, vento e água a favor." },
   { id: "sol", emoji: "☀️", label: "Sol", rarity: "raro", desc: "Evapora a água pra chover de novo depois." },
   { id: "pinguim", emoji: "🐧", label: "Pinguim", rarity: "raro", desc: "Nada bem melhor do que anda." },
-  { id: "foca", emoji: "🦭", label: "Foca", rarity: "raro", desc: "Mestra em mergulhos rápidos." },
+  { id: "foca", emoji: "🦭", alt: "🐟", label: "Foca", rarity: "raro", desc: "Mestra em mergulhos rápidos." },
   { id: "caranguejo", emoji: "🦀", label: "Caranguejo", rarity: "raro", desc: "Anda de lado, mas sempre perto da água." },
   // épicos
   { id: "cachoeira", emoji: "⛲", label: "Cachoeira", rarity: "epico", desc: "Água que nunca para de cair." },
@@ -60,7 +60,7 @@ const EMBLEMS = [
   { id: "baleiajubarte", emoji: "🐳", label: "Baleia Jubarte", rarity: "epico", desc: "Canta debaixo d'água pra quem quiser ouvir." },
   { id: "geleira", emoji: "🏔️", label: "Geleira", rarity: "epico", desc: "Água guardada há milhares de anos." },
   { id: "tempestade", emoji: "⛈️", label: "Tempestade", rarity: "epico", desc: "Quando o céu decide despejar tudo de uma vez." },
-  { id: "coral", emoji: "🪸", label: "Coral", rarity: "epico", desc: "Uma cidade inteira debaixo d'água." },
+  { id: "coral", emoji: "🪸", alt: "🌺", label: "Coral", rarity: "epico", desc: "Uma cidade inteira debaixo d'água." },
   // lendários
   { id: "sereia", emoji: "🧜‍♀️", label: "Sereia", rarity: "lendario", desc: "Diz a lenda que canta pra quem bebe água todo dia." },
   { id: "tridente", emoji: "🔱", label: "Tridente de Poseidon", rarity: "lendario", desc: "Comanda todos os oceanos com um só gesto." },
@@ -165,6 +165,8 @@ function loadData(email) {
   data.emblems = data.emblems || [];
   data.emblemCounts = data.emblemCounts || {};
   data.streakMilestones = data.streakMilestones || [];
+  data.giftIn = data.giftIn || [];
+  data.giftOut = data.giftOut || [];
   return data;
 }
 function saveData() {
@@ -406,6 +408,43 @@ function recomputeStreak() {
 }
 
 // ---------- emblemas (sorteio aleatório + álbum) ----------
+// Presentes de grupo: giftIn/giftOut guardam "emblema:idDoPresente" (só crescem, então sincronizam sem perda).
+function giftCount(list, id) {
+  return (list || []).filter((x) => typeof x === "string" && x.startsWith(id + ":")).length;
+}
+// Quantas cópias a pessoa tem: sorteadas + recebidas - dadas.
+function emblemCopies(data, id) {
+  const gin = giftCount(data.giftIn, id);
+  const gout = giftCount(data.giftOut, id);
+  const drawn = data.emblemCounts[id] !== undefined ? data.emblemCounts[id] : data.emblems.includes(id) && gin === 0 ? 1 : 0;
+  return Math.max(0, drawn + gin - gout);
+}
+
+// Alguns aparelhos não desenham emojis recentes (aparece um quadrado vazio): detecta e usa uma alternativa.
+const emojiDrawnCache = {};
+function emojiIsDrawn(ch) {
+  if (emojiDrawnCache[ch] !== undefined) return emojiDrawnCache[ch];
+  let ok = true;
+  try {
+    const c = document.createElement("canvas");
+    c.width = c.height = 40;
+    const x = c.getContext("2d");
+    x.font = "28px sans-serif";
+    x.textBaseline = "top";
+    const sig = (s) => { x.clearRect(0, 0, 40, 40); x.fillText(s, 2, 2); return c.toDataURL(); };
+    const mine = sig(ch);
+    ok = mine !== sig("\u{10FFFF}") && mine !== sig("");
+  } catch {
+    ok = true;
+  }
+  return (emojiDrawnCache[ch] = ok);
+}
+// devolve texto puro (emoji, alternativa ou a inicial do nome); nunca HTML
+function emblemGlyph(e) {
+  if (emojiIsDrawn(e.emoji)) return e.emoji;
+  if (e.alt && emojiIsDrawn(e.alt)) return e.alt;
+  return e.label.charAt(0);
+}
 function pickRarity(minRarity) {
   const minIdx = minRarity ? RARITY_ORDER.indexOf(minRarity) : 0;
   const pool = RARITY_ORDER.slice(minIdx);
@@ -430,7 +469,8 @@ function rollEmblem(minRarity) {
     isNew = true;
   } else {
     emblem = candidates[Math.floor(Math.random() * candidates.length)];
-    currentData.emblemCounts[emblem.id] = (currentData.emblemCounts[emblem.id] || 1) + 1;
+    const base = currentData.emblemCounts[emblem.id] !== undefined ? currentData.emblemCounts[emblem.id] : giftCount(currentData.giftIn, emblem.id) > 0 ? 0 : 1;
+    currentData.emblemCounts[emblem.id] = base + 1;
     currentData.xp += 5;
     isNew = false;
   }
@@ -494,6 +534,7 @@ function addWater(ml) {
   checkBadges();
   saveData();
   scheduleSync();
+  if (typeof scheduleGroupSnapshot === "function") scheduleGroupSnapshot();
   renderToday();
   renderProgress();
   renderAlbum();
@@ -581,9 +622,11 @@ function login(email) {
   updateSyncUI();
   scheduleSync(800);
   maybeAskCloudConsent();
+  if (typeof groupOnLogin === "function") groupOnLogin();
 }
 
 function logout() {
+  if (typeof groupOnLogout === "function") groupOnLogout();
   stopReminderLoop();
   currentEmail = null;
   currentProfile = null;
@@ -686,13 +729,13 @@ function renderAlbum() {
   grid.innerHTML = "";
   EMBLEMS.forEach((e, idx) => {
     const owned = currentData.emblems.includes(e.id);
-    const count = currentData.emblemCounts[e.id] || 0;
+    const count = emblemCopies(currentData, e.id);
     const el = document.createElement("div");
     el.className = `emblem rarity-${e.rarity}` + (owned ? " owned" : "");
     el.style.setProperty("--i", idx);
     el.innerHTML = `
       ${owned && count > 1 ? `<div class="count">x${count}</div>` : ""}
-      <span class="emoji">${e.emoji}</span>
+      <span class="emoji">${escapeHtml(emblemGlyph(e))}</span>
       <div class="label">${owned ? e.label : "???"}</div>
       <div class="rarity-tag">${RARITY_LABELS[e.rarity]}</div>
       ${owned ? `<div class="emblem-desc">${e.desc}</div>` : ""}
@@ -909,10 +952,12 @@ function handleGoogleCredential(response) {
 // até o usuário responder ao pedido de autorização.
 function startCloudSession(email, credential) {
   rememberGoogleCredential(credential);
-  if (currentProfile && currentProfile.cloudSync === true) {
+  const wantsCloud = currentProfile && (currentProfile.cloudSync === true || (currentProfile.groupPrefs && currentProfile.groupPrefs.consent === true));
+  if (wantsCloud) {
     establishSession(email, credential).then((ok) => {
       updateSyncUI();
-      if (ok) syncNow();
+      if (ok && currentProfile && currentProfile.cloudSync === true) syncNow();
+      if (ok && typeof groupOnSession === "function") groupOnSession();
     });
   } else {
     maybeAskCloudConsent();
@@ -1018,6 +1063,7 @@ document.addEventListener("DOMContentLoaded", () => {
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       tab.classList.add("active");
       document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+      if (typeof groupOnTab === "function") groupOnTab(tab.dataset.tab);
     });
   });
 

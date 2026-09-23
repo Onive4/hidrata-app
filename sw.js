@@ -1,5 +1,5 @@
-const CACHE = "hidrata-v18";
-const ASSETS = ["./", "./index.html", "./styles.css", "./lock.js", "./app.js", "./sync.js", "./privacy.js", "./google-config.js", "./push-config.js", "./manifest.json", "./icon.svg", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
+const CACHE = "hidrata-v19";
+const ASSETS = ["./", "./index.html", "./styles.css", "./lock.js", "./app.js", "./sync.js", "./privacy.js", "./group.js", "./google-config.js", "./push-config.js", "./manifest.json", "./icon.svg", "./icon-192.png", "./icon-512.png", "./icon-180.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));

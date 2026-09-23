@@ -93,6 +93,7 @@
       <button class="tab active" data-tab="today">Hoje</button>
       <button class="tab" data-tab="progress">Progresso</button>
       <button class="tab" data-tab="album">Álbum</button>
+      <button class="tab" data-tab="group">Grupo</button>
       <button class="tab" data-tab="profile">Perfil</button>
     </nav>
 
@@ -157,6 +158,11 @@
         <div class="album-progress-text"><span id="album-count">0</span>/<span id="album-total">0</span> colecionados</div>
       </div>
       <div class="album-grid" id="album-grid"></div>
+    </div>
+
+    <!-- TAB: GRUPO (montada por group.js) -->
+    <div class="tab-panel" id="tab-group">
+      <div class="g-root" id="group-root"></div>
     </div>
 
     <!-- TAB: PERFIL -->
@@ -248,6 +254,19 @@
     </div>
   </div>
 
+  <!-- consentimento para participar de grupos -->
+  <div id="group-consent-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="group-consent-title">
+    <div class="modal-card">
+      <h2 id="group-consent-title">👥 Participar de um grupo?</h2>
+      <p>Num grupo, as pessoas que entrarem com o mesmo convite veem de você: <strong>seu apelido, os dias da semana em que você chegou à sua meta, sua sequência, seu nível e quais emblemas você tem</strong>.</p>
+      <p><strong>Ninguém vê</strong> quanto você bebeu, seu peso, seus horários, seu e-mail nem seu nome do Google. Sua foto do Google só aparece se você ligar essa opção, e dá para desligar quando quiser.</p>
+      <p>Isso fica guardado no servidor (Cloudflare) e é apagado quando você sai do grupo, apaga seus dados da nuvem ou fica 60 dias sem abrir o app. Você pode se ocultar do grupo sem sair dele.</p>
+      <button id="btn-gconsent-policy" class="btn-link">Ler a política de privacidade</button>
+      <button id="btn-gconsent-accept" class="btn-primary">Aceitar</button>
+      <button id="btn-gconsent-decline" class="btn-secondary">Agora não</button>
+    </div>
+  </div>
+
   <!-- política de privacidade -->
   <div id="privacy-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="privacy-title">
     <div class="modal-card">
@@ -259,6 +278,7 @@
         <li><strong>Sempre, só no seu aparelho:</strong> seu perfil (nome, e-mail, peso, atividade, horários) e o histórico de água, conquistas e emblemas.</li>
         <li><strong>Na nuvem, só se você aceitar a sincronização:</strong> peso, atividade, horários, intervalo de lembrete e histórico/conquistas, ligados a um código derivado do seu ID do Google. Nunca e-mail, nome ou foto.</li>
         <li><strong>Para notificações com o app fechado, só se você ativar:</strong> o endereço técnico de notificação do seu navegador, seus horários e o fuso. Some sozinho após 90 dias sem uso.</li>
+        <li><strong>Em grupos, só se você entrar em um:</strong> seu apelido, os dias da semana em que você chegou à sua meta, sequência, nível, quais emblemas você tem e (só se você ligar) o endereço da sua foto do Google, visíveis apenas para os outros membros do mesmo grupo. Nunca a quantidade de água, peso, horários, e-mail ou nome. Para enviar avisos (cutucar, aplausos, presentes) o servidor liga sua conta aos aparelhos com notificação ativada. Tudo some quando você sai do grupo, apaga seus dados da nuvem ou passa 60 dias sem abrir o app.</li>
         <li><strong>Login com Google:</strong> o Google confirma quem você é. O servidor recebe o token do login (que contém e-mail, nome e foto) só para validar e não o guarda.</li>
       </ul>
       <h3>Para que usamos</h3>
@@ -271,7 +291,7 @@
       <p>Você pode confirmar e acessar seus dados (Exportar meus dados), corrigi-los (editar o Perfil), eliminá-los (Apagar meus dados da nuvem e Remover este perfil do aparelho), e revogar o consentimento a qualquer momento (desativando a sincronização).</p>
       <h3>Segurança</h3>
       <p>Conexão criptografada (HTTPS), login verificado no servidor, dados isolados por usuário e servidor que só fala com este site. Nenhum sistema é 100% seguro. Os dados na nuvem não têm criptografia ponta a ponta: quem administra o servidor consegue acessá-los tecnicamente.</p>
-      <p class="sync-note">Texto informativo simples, versão 1 (setembro de 2026). Não substitui aconselhamento jurídico.</p>
+      <p class="sync-note">Texto informativo simples, versão 2 (setembro de 2026). Não substitui aconselhamento jurídico.</p>
       <button id="btn-close-policy" class="btn-primary">Fechar</button>
     </div>
   </div>
@@ -294,5 +314,6 @@
   <script src="app.js"></script>
   <script src="sync.js"></script>
   <script src="privacy.js"></script>
+  <script src="group.js"></script>
 </body>
 </html>

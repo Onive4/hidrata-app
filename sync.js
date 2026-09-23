@@ -9,6 +9,7 @@ const SYNC_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SYNC_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const SYNC_LOG_ID_RE = /^[A-Za-z0-9|:_-]{1,60}$/;
 const SYNC_NAME_ID_RE = /^[a-z0-9_]{1,40}$/;
+const SYNC_GIFT_RE = /^[a-z0-9_]{1,40}:[A-Za-z0-9_-]{8,40}$/;
 const SYNC_DEFAULT_SETTINGS = { weightKg: 70, activity: "light", hot: false, wake: "07:00", sleep: "23:00", interval: 90, safetyHours: 6, goalOverride: null };
 
 let syncInFlight = false;
@@ -147,6 +148,8 @@ function localSyncState() {
         unlockedBadges: d.unlockedBadges || [],
         emblems: d.emblems || [],
         streakMilestones: d.streakMilestones || [],
+        giftIn: d.giftIn || [],
+        giftOut: d.giftOut || [],
       },
     })
   );
@@ -155,6 +158,9 @@ function localSyncState() {
 function clampNum(v, min, max, def) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
+}
+function cleanGiftIds(arr) {
+  return Array.isArray(arr) ? [...new Set(arr.filter((x) => typeof x === "string" && SYNC_GIFT_RE.test(x)))].sort().slice(0, 500) : [];
 }
 function cleanNameIds(arr) {
   return Array.isArray(arr) ? [...new Set(arr.filter((x) => typeof x === "string" && SYNC_NAME_ID_RE.test(x)))].slice(0, 500) : [];
@@ -222,6 +228,8 @@ function sanitizeBlob(raw) {
       streakMilestones: Array.isArray(d.streakMilestones)
         ? [...new Set(d.streakMilestones.map(Number).filter((n) => Number.isInteger(n) && n > 0 && n <= 100000))]
         : [],
+      giftIn: cleanGiftIds(d.giftIn),
+      giftOut: cleanGiftIds(d.giftOut),
     },
   };
 }
@@ -280,6 +288,8 @@ function mergeSyncStates(local, remote) {
       unlockedBadges: [...new Set([...L.unlockedBadges, ...R.unlockedBadges])].sort(),
       emblems,
       streakMilestones: [...new Set([...L.streakMilestones, ...R.streakMilestones])].sort((a, b) => a - b),
+      giftIn: [...new Set([...L.giftIn, ...R.giftIn])].sort(),
+      giftOut: [...new Set([...L.giftOut, ...R.giftOut])].sort(),
     },
   };
 }
@@ -309,6 +319,8 @@ function applySyncState(state) {
     unlockedBadges: state.data.unlockedBadges,
     emblems: state.data.emblems,
     streakMilestones: state.data.streakMilestones,
+    giftIn: state.data.giftIn,
+    giftOut: state.data.giftOut,
   });
   Object.assign(p, {
     weightKg: s.weightKg,
@@ -420,6 +432,7 @@ function refreshAfterSync(settingsChanged) {
   renderToday();
   renderProgress();
   renderAlbum();
+  if (typeof scheduleGroupSnapshot === "function") scheduleGroupSnapshot();
   if (settingsChanged) {
     fillProfileForm();
     syncPushSubscription({ silent: true });
@@ -469,7 +482,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   delBtn.addEventListener("click", async () => {
-    if (!confirm("Apagar seus dados da nuvem? Os dados deste aparelho continuam, mas a sincronização será desativada até você ativar de novo.")) return;
+    if (!confirm("Apagar seus dados da nuvem? Isso também tira você do grupo, se estiver em um. Os dados deste aparelho continuam, mas a sincronização será desativada até você ativar de novo.")) return;
     try {
       const resp = await apiSync("DELETE");
       if (!resp.ok) throw new Error("DELETE " + resp.status);
@@ -481,6 +494,7 @@ document.addEventListener("DOMContentLoaded", () => {
     saveProfiles();
     lastSyncAt = 0;
     updateSyncUI();
+    if (typeof groupAfterCloudDelete === "function") groupAfterCloudDelete();
     showToast("🗑️ Dados da nuvem apagados.");
   });
 

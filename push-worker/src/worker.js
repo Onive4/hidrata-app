@@ -1,5 +1,6 @@
 import webpush from "web-push";
 import { verifyGoogleIdToken } from "./auth.js";
+import { handleGroup, processGroups, removeUserFromGroup } from "./group.js";
 
 const ALLOWED_ORIGINS = new Set([
   "https://onive4.github.io",
@@ -362,8 +363,16 @@ async function handleSyncDelete(request, env, origin) {
   const userKey = await authenticate(request, env);
   if (!userKey) return json({ error: "sessao invalida" }, 401, origin);
   await env.SUBS.delete(userKey);
+  // "apagar meus dados da nuvem" inclui sair do grupo e apagar o que ele guardava
+  await removeUserFromGroup(env, userKey.startsWith("user:") ? userKey.slice(5) : userKey);
   return json({ ok: true }, 200, origin);
 }
+
+function ensureVapid(env) {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY);
+}
+
+const GROUP_DEPS = { json, readJsonBody, authenticate, sha256Hex, timingSafeEqual, sendPush, ensureVapid };
 
 export default {
   async fetch(request, env) {
@@ -400,6 +409,10 @@ export default {
     if (url.pathname === "/sync" && request.method === "DELETE") {
       return handleSyncDelete(request, env, origin);
     }
+    if (url.pathname === "/group" || url.pathname.startsWith("/group/")) {
+      const res = await handleGroup(request, env, origin, url, GROUP_DEPS);
+      if (res) return res;
+    }
     return json({ error: "nao encontrado" }, 404, origin);
   },
 
@@ -425,6 +438,7 @@ export default {
       }
     } while (cursor);
     console.log(`cron finalizado: ${total} inscricao(oes) verificada(s)`);
+    await processGroups(env, GROUP_DEPS);
   },
 };
 
