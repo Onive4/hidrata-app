@@ -129,6 +129,7 @@ function localSyncState() {
         sleep: p.sleep,
         interval: p.interval,
         safetyHours: p.safetyHours === undefined ? 6 : p.safetyHours,
+        streakMinPct: streakMinPct(p),
         goalOverride: p.goalOverride || null,
         updatedAt,
       },
@@ -172,6 +173,7 @@ function sanitizeBlob(raw) {
     sleep: SYNC_TIME_RE.test(s.sleep) ? s.sleep : "23:00",
     interval: clampInterval(s.interval),
     safetyHours: clampSafetyHours(s.safetyHours === undefined ? 6 : s.safetyHours),
+    streakMinPct: streakMinPct({ streakMinPct: s.streakMinPct }),
     goalOverride: s.goalOverride ? clampNum(s.goalOverride, 500, 8000, null) : null,
     updatedAt: clampNum(s.updatedAt, 0, 8.64e15, 0),
   };
@@ -316,9 +318,11 @@ function applySyncState(state) {
     sleep: s.sleep,
     interval: s.interval,
     safetyHours: s.safetyHours,
+    streakMinPct: s.streakMinPct,
     goalOverride: s.goalOverride,
     settingsUpdatedAt: s.updatedAt,
   });
+  recomputeStreak();
   saveData();
   saveProfiles();
   return before !== [p.wake, p.sleep, p.interval, p.safetyHours].join("|");

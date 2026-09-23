@@ -323,7 +323,7 @@ function fireGoalHitNotification() {
 }
 
 function fireStreakNotification(n) {
-  showSystemNotification(`🔥 ${n} dias seguidos batendo a meta! Sequência incrível.`);
+  showSystemNotification(`🔥 ${n} dias seguidos cuidando da sua hidratação! Sequência incrível.`);
 }
 
 // ---------- gamificação ----------
@@ -344,21 +344,65 @@ function registerGoalProgress(goal) {
     currentData.goalHit[date] = true;
     currentData.xp += 50;
     justHit = true;
-    // streak
-    const y = new Date();
-    y.setDate(y.getDate() - 1);
-    const yesterday = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
-    if (currentData.lastStreakDate === yesterday) currentData.streak += 1;
-    else if (currentData.lastStreakDate !== date) currentData.streak = 1;
-    currentData.lastStreakDate = date;
-    currentData.bestStreak = Math.max(currentData.bestStreak || 0, currentData.streak);
     showToast("🎉 Meta do dia batida! +50 XP");
     fireGoalHitNotification();
   }
-  if (total >= goal * 1.5 && !currentData._overFlagged) {
+  // conta no máximo uma vez por dia (antes somava a cada registro depois de 150%)
+  if (total >= goal * 1.5 && currentData.overGoalDate !== date) {
+    currentData.overGoalDate = date;
     currentData.overGoalDays = (currentData.overGoalDays || 0) + 1;
   }
   return justHit;
+}
+
+// ---------- dias seguidos ----------
+// A sequência é derivada do histórico (não de um contador): assim zera quando o dia é perdido,
+// corrige dias passados e fica igual em todos os aparelhos. Um dia conta a partir de X% da meta.
+const DEFAULT_STREAK_MIN_PCT = 80;
+
+function streakMinPct(profile) {
+  const n = Number(profile && profile.streakMinPct);
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.max(10, Math.round(n))) : DEFAULT_STREAK_MIN_PCT;
+}
+
+function shiftDay(key, delta) {
+  const [y, m, d] = key.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + delta);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
+function dayCountsForStreak(data, key, goal, pct) {
+  const total = getDayTotal(data, key);
+  return total > 0 && total >= (goal * pct) / 100;
+}
+
+function computeStreak(data, goal, pct, today) {
+  const counted = (k) => dayCountsForStreak(data, k, goal, pct);
+  const todayCounted = counted(today);
+  // hoje ainda pode contar: enquanto o dia não acaba, a sequência de ontem continua viva
+  const start = todayCounted ? today : shiftDay(today, -1);
+  let current = 0;
+  for (let k = start; counted(k) && current < 5000; k = shiftDay(k, -1)) current++;
+
+  let best = 0;
+  let run = 0;
+  let prev = null;
+  for (const day of Object.keys(data.logs || {}).filter(counted).sort()) {
+    run = prev && shiftDay(prev, 1) === day ? run + 1 : 1;
+    best = Math.max(best, run);
+    prev = day;
+  }
+  return { current, best, lastDay: current > 0 ? start : null, todayCounted };
+}
+
+function recomputeStreak() {
+  const s = computeStreak(currentData, calcGoal(currentProfile), streakMinPct(currentProfile), todayStr());
+  const before = [currentData.streak, currentData.bestStreak, currentData.lastStreakDate].join("|");
+  currentData.streak = s.current;
+  currentData.bestStreak = Math.max(currentData.bestStreak || 0, s.best, s.current);
+  currentData.lastStreakDate = s.lastDay;
+  if ([currentData.streak, currentData.bestStreak, currentData.lastStreakDate].join("|") !== before) saveData();
+  return s;
 }
 
 // ---------- emblemas (sorteio aleatório + álbum) ----------
@@ -429,6 +473,7 @@ function checkBadges() {
 function addWater(ml) {
   const date = todayStr();
   const time = nowHM();
+  const countedBefore = dayCountsForStreak(currentData, date, calcGoal(currentProfile), streakMinPct(currentProfile));
   currentData.logs[date] = currentData.logs[date] || [];
   currentData.logs[date].push({ time, ml, id: randomId(), ts: Date.now() });
   currentData.xp += 10;
@@ -437,6 +482,10 @@ function addWater(ml) {
 
   const goal = calcGoal(currentProfile);
   const justHitGoal = registerGoalProgress(goal);
+  const streakInfo = recomputeStreak();
+  if (!countedBefore && streakInfo.todayCounted && !justHitGoal) {
+    showToast(`🔥 Hoje já conta! ${streakInfo.current} ${streakInfo.current === 1 ? "dia seguido" : "dias seguidos"}`);
+  }
   checkStreakMilestones();
 
   if (Math.random() < 0.35) grantEmblemWithToast();
@@ -562,7 +611,15 @@ function renderToday() {
   ring.style.strokeDasharray = String(circumference);
   ring.style.strokeDashoffset = String(circumference * (1 - pct));
 
-  document.getElementById("streak-num").textContent = currentData.streak || 0;
+  const streakInfo = recomputeStreak();
+  document.getElementById("streak-num").textContent = streakInfo.current;
+  const minPct = streakMinPct(currentProfile);
+  const needMl = Math.max(0, Math.ceil((goal * minPct) / 100) - total);
+  let hint;
+  if (streakInfo.todayCounted) hint = "✅ Hoje já conta na sua sequência.";
+  else if (streakInfo.current > 0) hint = `⏳ Faltam ${needMl} ml hoje para manter seus ${streakInfo.current} ${streakInfo.current === 1 ? "dia" : "dias"} seguidos.`;
+  else hint = `Beba ${needMl} ml hoje (${minPct}% da meta) para começar uma sequência.`;
+  document.getElementById("streak-hint").textContent = hint;
   document.getElementById("xp-num").textContent = currentData.xp || 0;
   document.getElementById("next-reminder").textContent = nextReminderLabel();
 
@@ -657,6 +714,7 @@ function fillProfileForm() {
   document.getElementById("p-sleep").value = currentProfile.sleep;
   document.getElementById("p-interval").value = String(currentProfile.interval);
   document.getElementById("p-safety").value = String(currentProfile.safetyHours === undefined ? 6 : currentProfile.safetyHours);
+  document.getElementById("p-streak-min").value = String(streakMinPct(currentProfile));
   document.getElementById("p-goal-override").value = currentProfile.goalOverride || "";
 }
 
@@ -1005,6 +1063,7 @@ document.addEventListener("DOMContentLoaded", () => {
     currentProfile.sleep = document.getElementById("p-sleep").value;
     currentProfile.interval = clampInterval(document.getElementById("p-interval").value);
     currentProfile.safetyHours = clampSafetyHours(document.getElementById("p-safety").value);
+    currentProfile.streakMinPct = streakMinPct({ streakMinPct: document.getElementById("p-streak-min").value });
     currentProfile.settingsUpdatedAt = Date.now();
     const override = document.getElementById("p-goal-override").value;
     currentProfile.goalOverride = override ? Number(override) : null;

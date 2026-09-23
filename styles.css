@@ -436,6 +436,8 @@ h2 { font-size: 15px; color: var(--muted); margin: 18px 0 10px; }
   .screen { border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
 }
 
+.streak-hint { margin: 10px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
+
 .sync-card {
   background: var(--card);
   border: 1px solid var(--border);

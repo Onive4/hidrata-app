@@ -132,6 +132,8 @@
         </div>
       </div>
 
+      <p id="streak-hint" class="streak-hint"></p>
+
       <button id="btn-enable-notif" class="btn-secondary">🔔 Ativar notificações</button>
     </div>
 
@@ -193,6 +195,9 @@
         </label>
         <label>Lembrete de segurança: avisar se passar quantas horas sem nenhum lembrete? (0 = desligado)
           <input type="number" id="p-safety" min="0" max="24" step="1" required />
+        </label>
+        <label>Um dia conta nos "dias seguidos" a partir de quantos % da meta? (100 = meta completa)
+          <input type="number" id="p-streak-min" min="10" max="100" step="5" required />
         </label>
         <label>Meta manual (opcional, em ml)
           <input type="number" id="p-goal-override" min="500" max="8000" step="50" placeholder="deixe em branco para calcular automaticamente" />
